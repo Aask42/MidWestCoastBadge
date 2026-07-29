@@ -156,7 +156,34 @@ static const uint8_t CUBE_EDGES[12][2] = {
 static const float CUBE_FOCAL = 200.0f;
 static const float CUBE_DIST = 5.0f;
 static const float EYE_SEP = 0.28f;
-#define LENT_PERIOD_MS 6000  // one full rotation
+
+// === Loop timing ===
+// lentAngle is a SAWTOOTH: it ramps 0..TWO_PI and snaps back. Any motion driven
+// off it therefore only animates smoothly across the wrap if it completes a
+// whole number of cycles within one ramp - otherwise it jumps, every ramp, at
+// the same instant on every badge.
+//
+// That is why the angle now spans the whole loop rather than one revolution,
+// and why every rate below is an INTEGER count of cycles per loop. Adding a
+// motion at a fractional rate reintroduces the jump, so keep them integers.
+#define LENT_PERIOD_MS 6000  // one yaw revolution - the speed things are tuned at
+#define LENT_REVS 10         // yaw revolutions per loop
+#define LENT_LOOP_MS (LENT_PERIOD_MS * LENT_REVS)
+
+// Cycles per loop. Dividing any of these by LENT_REVS recovers the old rate
+// relative to yaw: yaw 1.0, pitch 0.6, ring counter-rotation 0.8, text 0.7.
+// Those ratios are unchanged - only the wrap point moved.
+#define LENT_YAW LENT_REVS   // 10 - still one revolution per 6s
+#define LENT_PITCH 6         // 0.6x yaw, the off-rate tumble
+#define LENT_RING_CCW 8      // 0.8x yaw, odd rings turning the other way
+#define LENT_TEXT_DEPTH 7    // 0.7x yaw, the sway in and out of the glass
+
+// The tunnel is phase-driven rather than rate-driven (see sceneTunnel), so its
+// two motions are counted directly. TUNNEL_PULL was 4.94 recycles per loop at
+// the old rate and TUNNEL_TWIST 2.5 turns; both are rounded to integers, which
+// is the whole point.
+#define TUNNEL_PULL 5
+#define TUNNEL_TWIST 2
 
 // Left and right eye colours. Through a correctly aligned lens each eye sees a
 // single solid colour, which makes this double as an alignment check: if the
@@ -384,10 +411,16 @@ static void seg3D(Arduino_GFX *g, float x0, float y0, float z0, float x1,
 }
 
 // Yaw+pitch, matching the cube's tumble so scenes feel like one family.
+//
+// Pitch runs at 0.6x yaw so the tumble does not repeat every revolution. It
+// still has to close by the end of the LOOP though: at 0.6 cycles per ramp the
+// pitch was three fifths of the way round when the angle snapped, so the cube
+// and the pyramid both hitched every 6 seconds. Six pitch cycles per ten yaw
+// cycles is the same 0.6 ratio and lands both back at their start together.
 static void spin(float a, float x, float y, float z, float &ox_, float &oy_,
                  float &oz_) {
-  const float sy = sinf(a), cy_ = cosf(a);
-  const float sp = sinf(a * 0.6f), cp = cosf(a * 0.6f);
+  const float sy = sinf(a * LENT_YAW), cy_ = cosf(a * LENT_YAW);
+  const float sp = sinf(a * LENT_PITCH), cp = cosf(a * LENT_PITCH);
   const float x1 = x * cy_ + z * sy;
   const float z1 = -x * sy + z * cy_;
   ox_ = x1;
@@ -428,12 +461,22 @@ static void scenePyramid(Arduino_GFX *g, float a, int cx, int cy) {
 static void sceneTunnel(Arduino_GFX *g, float a, int cx, int cy) {
   const int RINGS = 7;
   const float span = 7.0f;
+  // Driven off the normalised loop phase rather than off the angle directly.
+  // fmodf over `span` used to leave the ring stack part-way between slots when
+  // the angle wrapped - the rings were mid-slide and every one of them lurched
+  // at once, which read as the whole tunnel stuttering. Counting recycles per
+  // loop instead means the stack is back exactly where it started.
+  const float u = a * (1.0f / TWO_PI);  // 0..1 across the loop
   for (int i = 0; i < RINGS; i++) {
-    // Phase slides each ring forward; fmodf recycles it to the back.
-    float z = fmodf((float)i * (span / RINGS) - a * 0.55f + span * 4.0f, span) +
-              1.2f;
+    // Each ring sits one slot further back and slides toward the viewer,
+    // recycling to the rear TUNNEL_PULL times per loop. Adding TUNNEL_PULL
+    // keeps the operand positive, since fmodf of a negative stays negative.
+    const float slot =
+        fmodf((float)i / RINGS - u * TUNNEL_PULL + (float)TUNNEL_PULL, 1.0f);
+    const float z = slot * span + 1.2f;
     const float s = 1.6f;
-    const float tw = a * 0.25f + z * 0.15f;  // gentle twist adds parallax
+    // Gentle twist adds parallax; TUNNEL_TWIST whole turns per loop.
+    const float tw = u * (TWO_PI * TUNNEL_TWIST) + z * 0.15f;
     const float c = cosf(tw), sn = sinf(tw);
     float k[4][2];
     for (int v = 0; v < 4; v++) {
@@ -457,7 +500,11 @@ static void sceneRings(Arduino_GFX *g, float a, int cx, int cy) {
   for (int r = 0; r < RINGS; r++) {
     const float z = CUBE_DIST - 1.3f + r * 1.3f;
     const float rad = 0.75f + r * 0.28f;
-    const float tilt = a * (r % 2 ? -0.8f : 1.0f) + r;
+    // Odd rings counter-rotate at 0.8x. Whole cycles per loop either way, so
+    // the alternating rings close together - previously the counter-rotating
+    // one was the only thing in the scene that jumped, which looked like that
+    // single ring glitching rather than a timing problem.
+    const float tilt = a * (r % 2 ? -LENT_RING_CCW : LENT_YAW) + r;
     for (int s = 0; s < SEGS; s++) {
       const float t0 = (float)s * TWO_PI / SEGS;
       const float t1 = (float)(s + 1) * TWO_PI / SEGS;
@@ -491,8 +538,11 @@ static void sceneText(Arduino_GFX *g, float a, int cx, int cy) {
   };
   const Glyph gl[4] = {{D, 6}, {C, 3}, {T3, 4}, {F4, 3}};
 
-  const float sway = sinf(a) * 0.5f;
-  const float depth = CUBE_DIST - 1.6f + cosf(a * 0.7f) * 0.35f;
+  // Sway is already whole-cycle. Depth was the broken one: at 0.7 cycles per
+  // ramp the letters were caught mid-travel when the angle wrapped, so they
+  // snapped back through the glass instead of easing out of it.
+  const float sway = sinf(a * LENT_YAW) * 0.5f;
+  const float depth = CUBE_DIST - 1.6f + cosf(a * LENT_TEXT_DEPTH) * 0.35f;
   const float sc = 0.42f;
 
   for (int gi = 0; gi < 4; gi++) {
@@ -619,7 +669,10 @@ bool modesTick(uint32_t now) {
     // Phase, again shared: two badges show the same pose, not just the same
     // scene. The angle is computed once per frame - never inside a draw call,
     // which runs once per strip and would shear the scene across the bands.
-    lentAngle = (float)(phase % LENT_PERIOD_MS) * (TWO_PI / LENT_PERIOD_MS);
+    // Ramps 0..TWO_PI once per LOOP, not once per revolution. Scenes multiply
+    // it by their own whole-cycle counts, so every motion in every scene is
+    // back at its starting pose at the instant this wraps.
+    lentAngle = (float)(phase % LENT_LOOP_MS) * (TWO_PI / LENT_LOOP_MS);
     dirty = true;
   }
   return dirty;

@@ -603,6 +603,17 @@ the same value for a straight render with no colour rivalry.
 > deriving it from `millis()` inside the draw call would advance it between
 > strips and shear the cube into four misaligned bands.
 
+> ⚠️ `lentAngle` is a **sawtooth**: it ramps `0..TWO_PI` once per
+> `LENT_LOOP_MS` and snaps back. Every motion driven off it must therefore
+> complete a **whole number of cycles per loop**, which is why scenes multiply
+> it by integer constants (`LENT_YAW`, `LENT_PITCH`, `LENT_RING_CCW`,
+> `LENT_TEXT_DEPTH`, `TUNNEL_PULL`, `TUNNEL_TWIST`) rather than by fractional
+> rates. A fractional rate is caught mid-travel when the angle wraps and the
+> scene visibly hitches — and because phase comes from a shared wall clock, it
+> hitches on every badge at the same instant, which looks like a sync fault
+> rather than a timing bug. Ratios *between* motions are still free: pitch at
+> `6/10` of yaw is the same 0.6× tumble it always was.
+
 ---
 
 ## Touch handling
@@ -669,7 +680,9 @@ display.
 | `SAVE_DEBOUNCE_MS` | 1500 | NVS write debounce |
 | `ANIM_STEPS` | 3 | Frames per screen transition |
 | `LENT_FRAME_MS` | 40 | Cube frame interval (~20 fps, bounded by redraw) |
-| `LENT_PERIOD_MS` | 6000 | One full cube rotation |
+| `LENT_PERIOD_MS` | 6000 | One full yaw revolution |
+| `LENT_REVS` | 10 | Yaw revolutions per animation loop |
+| `LENT_LOOP_MS` | 60000 | The seamless loop — every motion closes here |
 | `EYE_SEP` | 0.28 | Stereo strength — **tune against your lens** |
 | `STRIP_H` | 80 px | Composite strip height |
 
