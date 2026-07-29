@@ -1,0 +1,39 @@
+# Custom 4MB layout for the DEF CON 34 badge.
+#
+# A sketch-local partitions.csv overrides the board's PartitionScheme option
+# entirely, so this file is the layout regardless of what the FQBN asks for.
+#
+# === Code and data are separated on purpose ===
+#
+# OTA needs two app slots: the new image lands in the inactive one while the
+# badge keeps running from the active one, and otadata records which to boot.
+# That rollback is the whole point - without it a bad OTA bricks a badge on
+# someone's lanyard with no USB port in sight.
+#
+# But images do NOT need to be duplicated across both slots. Baking a 150KB
+# bitmap into the firmware means paying for it TWICE (once per slot) and
+# re-transmitting every byte of it on every OTA, even when only code changed.
+#
+#   images in the app:   app0 1.94MB + app1 1.94MB, ~3 more images fit,
+#                        every OTA ships 1.5MB
+#   images in storage:   app0 1.5MB + app1 1.5MB + storage 1MB,
+#                        ~6 images fit, every OTA ships 1.24MB
+#
+# So: the A/B pair carries CODE ONLY, and `storage` holds the bitmaps. Assets
+# are updated independently of firmware, and an OTA is smaller because it never
+# re-sends artwork that has not changed.
+#
+# Code-only firmware is ~1.24MB, so a 1.5MB slot leaves ~18% headroom.
+# `storage` is a LittleFS volume; the badge scans it at boot, so dropping a new
+# .raw in makes it appear in the SHOW menu with no firmware change at all.
+#
+# nvs stays at 0x9000/0x5000, byte-identical to every stock scheme, so
+# repartitioning does NOT wipe settings or the badge keypair.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x170000,
+app1,       app,  ota_1,    0x180000, 0x170000,
+storage,    data, littlefs, 0x2F0000, 0x100000,
+coredump,   data, coredump, 0x3F0000, 0x10000,
