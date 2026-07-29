@@ -582,10 +582,14 @@ other**. A rotating wireframe cube is rendered as a genuine stereo pair — two
 independent projections interleaved by column parity — so it has real binocular
 depth rather than a painted-on illusion.
 
-- `projectCube()` — yaw about Y, pitch about X at 0.6× the rate so the tumble
-  doesn't repeat every revolution. Convergence is set at `CUBE_DIST`, so
-  geometry at that depth lands on the glass with zero parallax and everything
-  else splits either side of it.
+- `projectPoint()` — projects one world point for one eye. Convergence is set
+  at `CUBE_DIST`, so geometry at that depth lands on the glass with zero
+  parallax and everything else splits either side of it.
+- `seg3D()` — draws one 3D segment as a stereo pair. Every scene is built out
+  of this one call, which is what keeps them all correctly stereoscopic.
+- `spin()` — yaw about Y, pitch about X at 0.6× the rate so the tumble doesn't
+  repeat every revolution. Shared by the cube and the pyramid so they feel like
+  one family.
 - `drawLineParity()` — Bresenham that plots only even or only odd columns.
 
 **`EYE_SEP` is the knob to tune against your physical lens.** Disparity is
@@ -598,10 +602,10 @@ check**: through a correctly-pitched lens each eye sees one solid colour, and a
 misaligned lens shows magenta blend or shimmer. Set `C_EYE_L` and `C_EYE_R` to
 the same value for a straight render with no colour rivalry.
 
-> ⚠️ `drawLenticular()` is called **once per strip**, four times per frame. The
-> rotation angle is computed once per frame in `loop()` and held in a global —
-> deriving it from `millis()` inside the draw call would advance it between
-> strips and shear the cube into four misaligned bands.
+> ⚠️ `drawScene()` is called **once per strip**, four times per frame. The
+> rotation angle is computed once per frame in `modesTick()` and held in a
+> global — deriving it from `millis()` inside the draw call would advance it
+> between strips and shear the cube into four misaligned bands.
 
 > ⚠️ `lentAngle` is a **sawtooth**: it ramps `0..TWO_PI` once per
 > `LENT_LOOP_MS` and snaps back. Every motion driven off it must therefore

@@ -19,36 +19,6 @@ static uint32_t lastFrame = 0;
 // to ~1.05MB, which is 80% of the default 1.2MB app partition. Build with
 // PartitionScheme=huge_app (3MB app) before adding real image assets.
 
-void drawTestPattern(Arduino_GFX *g, int ox, int oy, uint8_t which) {
-  switch (which % 3) {
-    case 0: {  // SMPTE-ish colour bars
-      static const uint16_t bars[8] = {0xFFFF, 0xFFE0, 0x07FF, 0x07E0,
-                                       0xF81F, 0xF800, 0x001F, 0x0000};
-      const int w = SCREEN_W / 8;
-      for (int i = 0; i < 8; i++) {
-        g->fillRect(ox + i * w, oy, w, SCREEN_H, bars[i]);
-      }
-      break;
-    }
-    case 1: {  // concentric frames - good for checking edges and centring
-      g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_BG);
-      static const uint16_t cols[4] = {C_ACCENT, 0xF81F, 0xFFE0, C_FG};
-      for (int i = 0; i < 10; i++) {
-        g->drawRect(ox + i * 10, oy + i * 13, SCREEN_W - i * 20,
-                    SCREEN_H - i * 26, cols[i % 4]);
-      }
-      break;
-    }
-    default: {  // horizontal bands
-      for (int y = 0; y < SCREEN_H; y += 16) {
-        g->fillRect(ox, oy + y, SCREEN_W, 16,
-                    ((y / 16) % 2) ? C_ACCENT : C_BG);
-      }
-      break;
-    }
-  }
-}
-
 // Fits the name as large as the panel allows, wrapping at a space when two
 // lines let the glyphs be bigger than one. That is usually a big win: "YOUR
 // NAME" on one line is capped at size 4 by its 9 characters, but split across
@@ -191,38 +161,6 @@ static const float EYE_SEP = 0.28f;
 // colour for a straight lenticular render with no rivalry.
 #define C_EYE_L 0x07FF  // cyan
 #define C_EYE_R 0xFD20  // amber
-
-// Projects the cube for one eye. Convergence is set at CUBE_DIST, so geometry
-// at that depth lands on the glass with zero parallax and everything else
-// splits either side of it.
-void projectCube(float angle, float eyeX, int cx, int cy, int out[8][2]) {
-  const float sy = sinf(angle), cy_ = cosf(angle);
-  const float sp = sinf(angle * 0.6f), cp = cosf(angle * 0.6f);
-  const float fConv = CUBE_FOCAL / CUBE_DIST;
-
-  for (int i = 0; i < 8; i++) {
-    const float vx = CUBE_VERTS[i][0], vy = CUBE_VERTS[i][1],
-                vz = CUBE_VERTS[i][2];
-    // Yaw about Y, then pitch about X, at a slower rate so the tumble does not
-    // repeat every revolution.
-    const float x1 = vx * cy_ + vz * sy;
-    const float z1 = -vx * sy + vz * cy_;
-    const float y2 = vy * cp - z1 * sp;
-    const float z2 = vy * sp + z1 * cp;
-
-    float z = z2 + CUBE_DIST;
-    if (z < 0.5f) z = 0.5f;  // never divide through a vertex behind the camera
-    const float f = CUBE_FOCAL / z;
-
-    int px = cx + (int)((x1 - eyeX) * f + eyeX * fConv);
-    int py = cy + (int)(y2 * f);
-    // Bresenham walks every pixel between the endpoints, so a wild coordinate
-    // would cost real time. The projection cannot produce one, but clamp
-    // anyway rather than trust that.
-    out[i][0] = px < -SCREEN_W ? -SCREEN_W : (px > 2 * SCREEN_W ? 2 * SCREEN_W : px);
-    out[i][1] = py < -SCREEN_H ? -SCREEN_H : (py > 2 * SCREEN_H ? 2 * SCREEN_H : py);
-  }
-}
 
 // Bresenham that plots only columns of the given parity, so the two eye images
 // interleave on the panel without ever touching each other's pixels.
