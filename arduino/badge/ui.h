@@ -28,6 +28,11 @@ bool bannerActive();
 void drawBanner(Arduino_GFX *g, int ox, int oy);
 
 void drawHome(Arduino_GFX *g, int ox, int oy);
+
+// The hidden credits screen, reached only by holding a finger on home or on a
+// running mode for HOLD_MS. Not on any menu, and not hinted at anywhere.
+void drawCredits(Arduino_GFX *g, int ox, int oy);
+
 void handleGesture(Gesture g);
 
 // Boot splash expiry, idle handover, menu timeout. Called from loop().

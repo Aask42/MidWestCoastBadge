@@ -23,8 +23,11 @@ const uint8_t BRIGHT_PCT[] = {15, 30, 50, 75, 100};
 uint8_t brightness = BRIGHT_COUNT - 1;  // default full
 bool showBatteryIcon = true;
 
-char wifiSsid[33] = "";
-char wifiPass[64] = "";
+// Seeded from config.h, and only a seed: loadSettings() leaves these alone when
+// NVS has no stored network, so a blank badge comes up on the fleet AP and can
+// be reached by OTA, while a badge someone has pointed elsewhere keeps its own.
+char wifiSsid[33] = DEFAULT_WIFI_SSID;
+char wifiPass[64] = DEFAULT_WIFI_PASS;
 bool wifiWanted = false;
 
 static Preferences prefs;
@@ -123,8 +126,11 @@ void factoryReset() {
   setField(iotUser, sizeof(iotUser), "badge");
   iotPass[0] = '\0';
   setField(iotTopic, sizeof(iotTopic), "dc34");
-  wifiSsid[0] = '\0';
-  wifiPass[0] = '\0';
+  // Back to the fleet AP rather than to nothing. A reset badge that cannot
+  // reach the network also cannot be recovered by OTA, which is the one thing
+  // you want working after someone has reset a badge you are holding.
+  setField(wifiSsid, sizeof(wifiSsid), DEFAULT_WIFI_SSID);
+  setField(wifiPass, sizeof(wifiPass), DEFAULT_WIFI_PASS);
   wifiWanted = false;
   brightness = BRIGHT_COUNT - 1;
   showBatteryIcon = true;

@@ -1,5 +1,22 @@
-# arduino-cli output
-build/
+# === MicroPython: the earlier exploration, not carried forward ===
+# The badge is Arduino-only now. See MVP.md.
+/badge/
+/lvgl_micropython/
+
+# === Build artifacts ===
+arduino/badge/build/
+.build/
+
+# === Extracted vendor firmware images and strings ===
+# Large binaries, and not ours to redistribute from a public repo.
+dump/
+
+# === Local tooling ===
+.claude/
+image.png
+tools/venv/
+__pycache__/
+*.pyc
 
 # Resilio Sync placeholders
 *.rsls

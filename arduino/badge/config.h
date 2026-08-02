@@ -47,7 +47,7 @@
 
 // Bumped by hand. Shown on the splash so a badge in someone else's hands can
 // be identified without opening a serial console.
-#define BADGE_VERSION "0.6.0"
+#define BADGE_VERSION "0.6.1"
 
 // === Palette (RGB565) ===
 #define C_BG 0x1082      // near-black
@@ -80,14 +80,36 @@ static const int MAX_JUMP = 60;
 // that edge, whichever way it then travels.
 #define EDGE_ZONE 80
 
+// How long a finger has to sit still before the stroke becomes a hold. Long
+// enough that nobody finds it by accident during an ordinary tap, which is the
+// point - it is the only way to the credits screen.
+static const uint32_t HOLD_MS = 3000;
+
 #define ANIM_STEPS 3  // frames per screen transition
 
 // === Timing ===
 static const uint32_t SPLASH_MS = 3000;
-static const uint32_t IDLE_MS = 15000;
+// Two separate idle windows, because they answer different questions.
+// MODE_IDLE_MS is how long home sits before the badge starts doing its thing on
+// its own - short, because a badge on a lanyard showing a static summary card is
+// the failure mode. MENU_IDLE_MS is how long an open menu survives being
+// ignored, and wants to stay generous: it runs while someone is reading a list
+// or deciding what to tap, and yanking that away mid-thought is worse than
+// leaving it up.
+static const uint32_t MODE_IDLE_MS = 5000;
+static const uint32_t MENU_IDLE_MS = 15000;
 static const uint32_t SLIDE_MS = 2500;         // slideshow dwell per image
 static const uint32_t SAVE_DEBOUNCE_MS = 1500; // NVS write debounce
 static const uint32_t WIFI_POLL_MS = 1000;
+
+// === MQTT connect timeouts ===
+// The library defaults here are 3s TCP, 120s TLS handshake and 15s for CONNACK,
+// and all three block loop(). See mqttBegin() for why that adds up to the badge
+// freezing rather than just being offline. Short enough that an unreachable
+// broker is a hitch, long enough to cross a congested con network.
+static const uint32_t MQTT_TCP_TIMEOUT_MS = 2000;
+static const uint32_t MQTT_TLS_HANDSHAKE_S = 5;
+static const uint32_t MQTT_SOCKET_TIMEOUT_S = 2;
 static const uint32_t LENT_FRAME_MS = 40;      // ~20fps, bounded by redraw cost
 
 // === Menu geometry ===
@@ -110,6 +132,20 @@ static const uint32_t LENT_FRAME_MS = 40;      // ~20fps, bounded by redraw cost
 // involving it composite correctly - present() draws whatever id it is handed.
 #define SCREEN_HOME -1
 #define SCREEN_KB -2
+#define SCREEN_CREDITS -3
+
+// === Credits ===
+// Reached only by holding a finger on the badge for HOLD_MS. Deliberately not
+// on any menu and not hinted at on the home screen: a badge that advertises its
+// own easter egg has not got one.
+// The name is split across two lines rather than wrapped at draw time: it is
+// the largest text on the screen and the break wants to be a decision, not
+// whatever the fitter happens to land on.
+#define CREDITS_NAME1 "AMELIA"
+#define CREDITS_NAME2 "WIETTING"
+#define CREDITS_FOR "for DEF CON 34"
+#define CREDITS_AKA "AKA Aask Questions"
+#define CREDITS_URL "aask.ltd"
 
 // === Modes, matching the order of modeItems[] ===
 // The MODE menu is now a flat list of "what should be on the screen": the
@@ -121,6 +157,15 @@ static const uint32_t LENT_FRAME_MS = 40;      // ~20fps, bounded by redraw cost
 #define MODE_SCENE_FIRST 2  // rows 2..2+SHOW_COUNT-1 are individual shows
 
 #define DEFAULT_NAME "YOUR NAME"
+
+// === Default network ===
+// Compiled in so a freshly flashed badge joins the fleet network on its own and
+// is reachable by OTA without anyone first typing a passphrase on a 240px
+// keyboard. These are only the starting values: anything already stored in NVS
+// wins, so a badge moved to another network stays there across reflashes, and
+// SETTINGS or the serial console still override them per badge.
+#define DEFAULT_WIFI_SSID "wifiot"
+#define DEFAULT_WIFI_PASS "WhyKnot42!"
 
 // === Battery sense ===
 // GPIO1 is the only ADC-capable pin this firmware does not already use (ADC1

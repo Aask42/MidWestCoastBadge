@@ -70,6 +70,31 @@ void drawBanner(Arduino_GFX *g, int ox, int oy) {
   }
 }
 
+// The credits. Framed in accent like the banner so it reads as something the
+// badge chose to show rather than another menu, and laid out around the name
+// because that is the part worth reading from across a table.
+void drawCredits(Arduino_GFX *g, int ox, int oy) {
+  g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_BG);
+  g->drawRect(ox + 6, oy + 6, SCREEN_W - 12, SCREEN_H - 12, C_ACCENT);
+  g->drawRect(ox + 7, oy + 7, SCREEN_W - 14, SCREEN_H - 14, C_ACCENT);
+
+  printCentered(g, "Made by", ox, oy + 52, 1, C_DIM);
+
+  // Two lines at size 3, because the name is the whole point of the screen and
+  // should not be the smallest thing on it: "AMELIA WIETTING" on one line only
+  // fits down at size 1, which is the size everything else here already is.
+  printCentered(g, CREDITS_NAME1, ox, oy + 74, 3, C_FG);
+  printCentered(g, CREDITS_NAME2, ox, oy + 108, 3, C_FG);
+
+  printCentered(g, CREDITS_FOR, ox, oy + 150, 1, C_DIM);
+  printCentered(g, CREDITS_AKA, ox, oy + 178, 1, C_ACCENT);
+
+  printCentered(g, CREDITS_URL, ox, oy + 214, 2, C_NAV);
+
+  printCentered(g, "v" BADGE_VERSION, ox, oy + SCREEN_H - 42, 1, C_DIM);
+  printCentered(g, "touch to return", ox, oy + SCREEN_H - 26, 1, C_DIM);
+}
+
 // The four swipe affordances drawn around the edge of the home screen.
 
 void drawHomeHints(Arduino_GFX *g, int ox, int oy) {
@@ -133,12 +158,37 @@ void handleGesture(Gesture g) {
 
   lastActivity = millis();
 
+  // Credits are modal: they went up on a deliberate hold, so anything at all
+  // takes them down again and nothing falls through. Checked first so the
+  // gesture cannot also be read as navigation on the way out.
+  if (current == SCREEN_CREDITS) {
+    LOGF("credits dismissed (%s)\n", gestureWord(g));
+    slideTo(SCREEN_HOME, G_DOWN);  // slideTo sets current; it needs the old one
+    return;
+  }
+
+  // A hold anywhere that is not a menu or the keyboard opens the credits. Menus
+  // are excluded because a finger resting on a row while someone reads the list
+  // is ordinary behaviour there, and the keyboard because it is mid-edit.
+  if (g == G_HOLD) {
+    if (current == SCREEN_HOME) {
+      splashActive = false;
+      modeActive = false;
+      navClear();
+      LOGF("hold -> credits\n");
+      slideTo(SCREEN_CREDITS, G_UP);
+    } else {
+      LOGF("hold on screen %d ignored\n", current);
+    }
+    return;
+  }
+
   // Any touch wakes the badge out of a running mode. A tap just dismisses it
   // to home. A swipe, though, carries intent - it was aimed at an edge - so
   // the mode is dropped and the gesture falls through to be handled normally,
   // opening the menu it was reaching for. Spending a deliberate swipe purely
   // on waking up meant every trip into a menu cost one extra gesture once the
-  // badge had been sitting for IDLE_MS, which is most of the time.
+  // badge had been sitting for MODE_IDLE_MS, which is most of the time.
   if (modeActive) {
     modeActive = false;
     current = SCREEN_HOME;
@@ -343,16 +393,26 @@ void uiTick(uint32_t now) {
   // to home, which then hands over to the mode on the next idle window. The
   // keyboard is exempt: abandoning a half-typed name silently would be worse
   // than leaving it on screen.
-  if (current >= 0 && now - lastActivity >= IDLE_MS) {
+  if (current >= 0 && now - lastActivity >= MENU_IDLE_MS) {
     LOGF("menu idle -> home\n");
     lastActivity = now;
     navClear();  // a timeout goes all the way home, not one step back
     slideTo(SCREEN_HOME, menus[current].retreat);
   }
 
+  // Credits time out like a menu does. Neither the menu timeout above nor the
+  // mode handover below catches this screen - one wants a menu id, the other
+  // wants home - so a badge whose owner walked away mid-hold would otherwise
+  // sit on the credits until someone touched it.
+  if (current == SCREEN_CREDITS && now - lastActivity >= MENU_IDLE_MS) {
+    LOGF("credits idle -> home\n");
+    lastActivity = now;
+    slideTo(SCREEN_HOME, G_DOWN);
+  }
+
   // Home left idle long enough hands over to the selected mode.
   if (!splashActive && !modeActive && current == SCREEN_HOME &&
-      now - lastActivity >= IDLE_MS) {
+      now - lastActivity >= MODE_IDLE_MS) {
     modeActive = true;
     modesEnter(now);
     LOGF("idle -> mode %s\n", modeItems[activeMode()]);

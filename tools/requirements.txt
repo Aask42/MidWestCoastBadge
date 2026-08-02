@@ -1,0 +1,12 @@
+# Host-side badge tooling.
+#
+#   pip3 install --user -r tools/requirements.txt
+#
+# Everything that talks to a badge over MQTT signs its commands, so
+# `cryptography` is required even by the tools that only send a banner.
+# tkinter is NOT here: it ships with python, but the Homebrew and pyenv builds
+# omit it. If badge_fleet.py cannot import tkinter, run it with the system
+# python at /usr/bin/python3.
+paho-mqtt>=1.6
+cryptography>=41
+pyserial>=3.5

@@ -9,6 +9,13 @@ int startX = 0, startY = 0, lastX = 0, lastY = 0;
 static bool touchDown = false;
 static int bestDx = 0, bestDy = 0;  // furthest travel seen during the stroke
 
+// Hold state. downAt is when the current stroke started; holdFired records that
+// the stroke has already been spent on a G_HOLD, so the eventual release does
+// not also report a tap. Without that, holding on home would open the credits
+// and then immediately have the release dismiss them again.
+static uint32_t downAt = 0;
+static bool holdFired = false;
+
 static uint8_t readReg(uint8_t reg);
 static void writeReg(uint8_t reg, uint8_t val);
 
@@ -178,6 +185,8 @@ Gesture pollGesture() {
       startY = y;
       bestDx = 0;
       bestDy = 0;
+      downAt = millis();
+      holdFired = false;
     } else if (abs(x - lastX) > MAX_JUMP || abs(y - lastY) > MAX_JUMP) {
       // The controller occasionally emits a wild coordinate. Because travel is
       // tracked as the furthest point ever seen, a single bad sample turns a
@@ -193,11 +202,42 @@ Gesture pollGesture() {
     int dy = y - startY;
     if (abs(dx) > abs(bestDx)) bestDx = dx;
     if (abs(dy) > abs(bestDy)) bestDy = dy;
+
+    // Fires mid-stroke, and only for a finger that has stayed put: the travel
+    // test is the same one that separates a tap from a swipe, so a slow drag
+    // across the screen is still a swipe and never a hold. Checked against
+    // furthest travel rather than current position, so returning to the start
+    // does not launder a swipe into a hold.
+    if (!holdFired && millis() - downAt >= HOLD_MS) {
+      if (abs(bestDx) < SWIPE_MIN && abs(bestDy) < SWIPE_MIN) {
+        holdFired = true;
+        LOGF("stroke at %d,%d held %lums -> HOLD\n", startX, startY,
+             (unsigned long)(millis() - downAt));
+        return G_HOLD;
+      }
+      // Logged once per stroke, because the alternative is a hold that does
+      // nothing and says nothing. A finger resting on the panel drifts, and if
+      // it drifts past SWIPE_MIN inside three seconds this is the only place
+      // that would ever mention it.
+      static uint32_t lastBlockLog = 0;
+      if (millis() - lastBlockLog > HOLD_MS) {
+        lastBlockLog = millis();
+        LOGF("hold at %d,%d blocked: drifted %d,%d (>= %d)\n", startX, startY,
+             bestDx, bestDy, SWIPE_MIN);
+      }
+    }
     return G_NONE;
   }
 
   if (!touchDown) return G_NONE;
   touchDown = false;
+
+  // The hold already consumed this stroke. Reporting the release as well would
+  // hand the UI a tap it never asked for.
+  if (holdFired) {
+    holdFired = false;
+    return G_NONE;
+  }
 
   const int dx = bestDx;
   const int dy = bestDy;
@@ -218,7 +258,7 @@ Gesture pollGesture() {
   }
 
   LOGF("stroke start=%d,%d end=%d,%d best=%d,%d -> %s\n", startX, startY, lastX,
-       lastY, bestDx, bestDy, g == G_TAP ? "TAP" : gestureWord(g));
+       lastY, bestDx, bestDy, gestureWord(g));
   return g;
 }
 
@@ -228,6 +268,8 @@ const char *gestureWord(Gesture g) {
     case G_DOWN: return "DOWN";
     case G_LEFT: return "LEFT";
     case G_RIGHT: return "RIGHT";
+    case G_TAP: return "TAP";
+    case G_HOLD: return "HOLD";
     default: return "?";
   }
 }

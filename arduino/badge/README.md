@@ -370,9 +370,19 @@ there. Toggle it from **SYSTEM → battery**.
 
 ## Serial console
 
+A freshly flashed badge already joins the fleet AP on its own — `DEFAULT_WIFI_SSID`
+and `DEFAULT_WIFI_PASS` in `config.h` seed the credentials, so a badge straight
+off the programmer is reachable by OTA without touching it. The console is for
+badges that need to be somewhere else.
+
+Anything stored in NVS wins over the compiled-in default, so a badge you have
+pointed at another network keeps it across reflashes. To get the default back on
+a badge that has already been provisioned, factory reset it (which now restores
+the fleet AP rather than clearing the network) or erase flash before flashing.
+
 Provisioning a badge by typing a WPA2 passphrase on a 240px on-screen keyboard
-is miserable, and it is the first thing anyone does with a new badge. Over USB
-instead:
+is miserable, and it is the first thing anyone does with a badge that has to
+move off the default network. Over USB instead:
 
 ```
 wifi <ssid> <pass>              set credentials and join
@@ -416,14 +426,19 @@ a bug in the dimmer should never leave you with a black screen.
 ### Screen flow
 
 ```
-boot ──► DEF CON 34 splash ──► home ──► (idle 15 s) ──► selected mode
-                                 ▲                          │
-                                 └────── tap ───────────────┘
+boot ──► DEF CON 34 splash ──► home ──► (idle 5 s) ──► selected mode
+                                 ▲                         │
+                                 └────── tap ──────────────┘
 ```
 
 A **tap** while a mode is running dismisses it to home. A **swipe** dismisses it
 *and still opens the menu it was aimed at* — waking the badge never costs you a
 gesture.
+
+**Hold for 3 s** on home (or on a running mode) opens the credits screen. It is
+deliberately not on a menu and not hinted at on screen — the home card's edge
+labels would give it away. Any touch dismisses it, and it times out like a menu
+does so a badge left on a lanyard goes back to its mode on its own.
 
 ### Menus are anchored to screen edges
 
@@ -485,9 +500,9 @@ yet** — `status` always reads offline.
   (a badge on a table shouldn't display its own password) but shown in clear
   while editing, where you need to check what you typed.
 - **connect** — `WiFi.begin` is asynchronous throughout, so a wrong password
-  costs you a status label, not a frozen UI. Auto-joins at boot if an SSID is
-  already stored. Status is polled once a second and only redraws when SYSTEM
-  is the visible screen.
+  costs you a status label, not a frozen UI. Auto-joins at boot from whatever
+  SSID is stored, which on a blank badge is the compiled-in default. Status is
+  polled once a second and only redraws when SYSTEM is the visible screen.
 
 ---
 
@@ -678,8 +693,10 @@ display.
 | `SWIPE_MIN` | 22 px | Swipe/tap threshold |
 | `MAX_JUMP` | 60 px | Glitch rejection ceiling |
 | `EDGE_ZONE` | 80 px | How close to an edge a stroke counts as that edge's |
+| `HOLD_MS` | 3000 | Finger held still before a stroke becomes a hold |
 | `SPLASH_MS` | 3000 | Boot splash |
-| `IDLE_MS` | 15000 | Home idle before handing over to the mode |
+| `MODE_IDLE_MS` | 5000 | Home idle before handing over to the mode |
+| `MENU_IDLE_MS` | 15000 | Open menu idle before dropping back to home |
 | `SLIDE_MS` | 2500 | Slideshow dwell per image |
 | `SAVE_DEBOUNCE_MS` | 1500 | NVS write debounce |
 | `ANIM_STEPS` | 3 | Frames per screen transition |

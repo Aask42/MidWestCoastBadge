@@ -47,11 +47,14 @@ static void topicFor(char *out, size_t n, const char *leaf) {
            leaf);
 }
 
+// Ordered most-specific-cause first. lastError is checked LAST because it
+// outlives whatever produced it: reporting a stale "connect failed" at someone
+// whose actual problem is that WiFi dropped sends them debugging the wrong box.
 const char *mqttStateText() {
   if (mqtt.connected()) return "connected";
-  if (lastError[0]) return lastError;
   if (!wifiIsConnected()) return "no wifi";
   if (iotBroker[0] == '\0') return "no broker set";
+  if (lastError[0]) return lastError;
   return "connecting";
 }
 
@@ -237,6 +240,20 @@ void mqttBegin() {
   // outgrow silently - publish() just returns false.
   mqtt.setBufferSize(512);
   mqtt.setKeepAlive(30);
+
+  // connectOnce() runs on the loop() thread, and every blocking step inside it
+  // ships with a timeout sized for a headless device that has nothing better to
+  // do: 3s to open the socket, 120s for a TLS handshake, and 15s waiting for
+  // CONNACK. The CONNACK wait is the dangerous one - PubSubClient spins on
+  // while (!available()) with no yield, so on this single-core part touch,
+  // redraw and the serial console all stop until it gives up. Left at the
+  // defaults, a broker that simply is not running does not make the badge
+  // offline, it makes the badge look dead. Bounded here so the worst case is a
+  // hitch you can feel rather than a lockup.
+  mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
+  plainClient.setConnectionTimeout(MQTT_TCP_TIMEOUT_MS);
+  tlsClient.setConnectionTimeout(MQTT_TCP_TIMEOUT_MS);
+  tlsClient.setHandshakeTimeout(MQTT_TLS_HANDSHAKE_S);  // seconds, not ms
 }
 
 static void connectOnce() {
@@ -331,8 +348,25 @@ static void publishTelemetry() {
   mqtt.publish(topic, payload, false);
 }
 
+// Failures counted against the old broker say nothing about a new one, so a
+// config change starts the backoff over. Without this, correcting a typo in the
+// broker field left the badge sitting out the remainder of a 60s retry delay,
+// which reads exactly like the correction not having worked.
+static void resetBackoffIfTargetChanged() {
+  static char lastBroker[sizeof(iotBroker)] = "";
+  static char lastPort[sizeof(iotPort)] = "";
+  if (strcmp(lastBroker, iotBroker) == 0 && strcmp(lastPort, iotPort) == 0) {
+    return;
+  }
+  setField(lastBroker, sizeof(lastBroker), iotBroker);
+  setField(lastPort, sizeof(lastPort), iotPort);
+  failures = 0;
+  lastError[0] = '\0';
+}
+
 void mqttTick(uint32_t now) {
   const bool wasOnline = iotOnline;
+  resetBackoffIfTargetChanged();
 
   if (!wifiIsConnected() || iotBroker[0] == '\0') {
     if (mqtt.connected()) mqtt.disconnect();
@@ -348,8 +382,13 @@ void mqttTick(uint32_t now) {
   } else {
     iotOnline = false;
     if (now - lastAttempt >= retryDelay()) {
-      lastAttempt = now;
       connectOnce();
+      // Timed from when the attempt FINISHED, not when it started. connectOnce()
+      // blocks, so starting the clock beforehand let a slow failure eat its own
+      // backoff: a 15s timeout against a 6s delay meant the next attempt fired
+      // the instant the last one returned, and the badge spent its whole life
+      // inside a connect that was never going to succeed.
+      lastAttempt = millis();
     }
   }
 

@@ -1,0 +1,8 @@
+# arduino-cli output
+build/
+
+# Resilio Sync placeholders
+*.rsls
+*.rslsc
+
+.DS_Store

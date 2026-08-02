@@ -107,6 +107,9 @@ void drawScreen(Arduino_GFX *g, int id, int ox, int oy) {
   }
   if (id == SCREEN_KB) {
     drawKeyboard(g, ox, oy);
+  } else if (id == SCREEN_CREDITS) {
+    drawCredits(g, ox, oy);
+    return;  // no battery gauge: the credits are a full-bleed card
   } else if (id == SCREEN_HOME) {
     if (modeActive) {
       drawModeScreen(g, ox, oy);

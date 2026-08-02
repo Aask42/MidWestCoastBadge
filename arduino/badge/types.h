@@ -10,7 +10,14 @@
 
 // Direction of a completed stroke. G_TAP is a stroke that never travelled far
 // enough to be a swipe; G_NONE means no gesture completed this poll.
-enum Gesture { G_NONE, G_UP, G_DOWN, G_LEFT, G_RIGHT, G_TAP };
+//
+// G_HOLD is the odd one out: every other gesture fires on release, but a hold
+// fires WHILE the finger is still down, the moment it has been there long
+// enough. Waiting for release would mean holding for three seconds and then
+// seeing nothing until you let go, which feels like the badge missed it.
+// Appended rather than inserted - the switches over this enum all have a
+// default, but the order still wants to stay stable.
+enum Gesture { G_NONE, G_UP, G_DOWN, G_LEFT, G_RIGHT, G_TAP, G_HOLD };
 
 // Result of one touch poll. T_FAILED must be distinguished from T_UP: treating
 // a bad I2C read as "finger lifted" chops a swipe in half and loses it.
