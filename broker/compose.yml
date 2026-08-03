@@ -1,0 +1,22 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    container_name: dc34-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./config:/mosquitto/config:ro
+      - ./data:/mosquitto/data
+      - ./log:/mosquitto/log
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mosquitto_sub -h 127.0.0.1 -p 1883 -u health -P "$${HEALTH_PASSWORD}" -t '$$SYS/broker/uptime' -C 1 -W 3 >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    environment:
+      HEALTH_PASSWORD: ${HEALTH_PASSWORD}
