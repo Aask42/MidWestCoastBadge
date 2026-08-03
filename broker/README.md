@@ -20,3 +20,21 @@ Stop without deleting retained state:
 ```sh
 docker compose -f broker/compose.yml --env-file broker/.env down
 ```
+
+## Production
+
+The Oracle Always Free deployment lives alongside this one and does not change
+it: separate compose file, separate Mosquitto config, separate credentials.
+Nothing above behaves differently because production exists.
+
+| | Local | Production |
+| --- | --- | --- |
+| Compose | `compose.yml` | `compose.production.yml` |
+| Mosquitto config | `config/mosquitto.conf` | `config/mosquitto.production.conf` |
+| Credentials | `.env`, `config/passwd` | `.env.production`, `config/passwd.production` |
+| ACL | `config/acl.conf` | the same file, shared |
+| Exposed | 1883, 9001 on localhost | 80, 443, 8883 only |
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the full walkthrough: instance setup,
+the two Oracle firewalls, ACME certificates shared between Caddy and Mosquitto,
+and the backup, update and rollback commands.
