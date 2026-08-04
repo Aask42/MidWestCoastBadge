@@ -45,6 +45,15 @@ extern uint8_t brightness;
 // a new pack is watch it drain.
 extern bool showBatteryIcon;
 
+// WiFi observations stay on the badge unless the owner opts into publishing
+// them to the configured MQTT fleet topic.
+extern bool shareWifiScans;
+
+// User-defined popup shown on demand from the settings menu.
+extern char popupText[48];
+
+// 180-degree display rotation for badges worn upside-down.
+extern bool displayFlipped;
 
 // === WiFi credentials ===
 extern char wifiSsid[33];  // 32 chars max per 802.11

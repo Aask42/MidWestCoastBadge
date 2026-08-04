@@ -1,10 +1,10 @@
 #!/usr/bin/env python3 -u
 """Flash every badge that gets plugged in, hands-free.
 
-Watches for new serial ports appearing and writes a complete, OTA-ready image
-to each one as it shows up: bootloader, partition table, otadata, the
-application, and the LittleFS art partition. Plug a badge in, wait for the
-green line, unplug it, plug in the next.
+Watches for new serial ports appearing and writes a complete, recoverable image
+to each one as it shows up: bootloader, partition table, otadata, immutable
+factory recovery, the main application, and LittleFS art. Plug a badge in,
+wait for the green line, unplug it, plug in the next.
 
     ./tools/mass_flash.py                   # compile, then wait for badges
     ./tools/mass_flash.py --no-build        # flash the existing build
@@ -23,7 +23,7 @@ identical to every other badge regardless of what was on it before.
 Safety checks that run before anything is written
 -------------------------------------------------
 * the app image really is an ESP32 image (magic byte 0xE9)
-* the app fits the `app0` slot in `partitions.csv`
+* recovery and main each fit their own slot in `partitions.csv`
 * the partition table the firmware was BUILT against matches the one in the
   sketch directory - a stale build tree is otherwise undetectable and produces
   badges that are subtly wrong
@@ -36,6 +36,7 @@ alone rather than flashed again in a loop.
 import argparse
 import concurrent.futures
 import glob
+import hashlib
 import json
 import os
 import re
@@ -47,6 +48,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SKETCH = os.path.join(ROOT, "arduino", "badge")
+RECOVERY_SKETCH = os.path.join(ROOT, "arduino", "recovery")
 IMAGES = os.path.join(ROOT, "images")
 STATE_DIR = os.path.join(ROOT, ".build")
 
@@ -56,6 +58,7 @@ STATE_DIR = os.path.join(ROOT, ".build")
 # looking authoritative. Pinning --build-path here means the artifacts this
 # tool flashes are always the ones it just built.
 BUILD = os.path.join(STATE_DIR, "arduino")
+RECOVERY_BUILD = os.path.join(STATE_DIR, "recovery")
 STORAGE_BIN = os.path.join(STATE_DIR, "storage.bin")
 LEDGER = os.path.join(STATE_DIR, "flashed.json")
 
@@ -91,12 +94,21 @@ if not sys.stdout.isatty():
     RED = GREEN = YELLOW = DIM = RESET = ""
 
 _print_lock = threading.Lock()
+_reporter = None
+
+
+def set_reporter(reporter):
+    """Mirror status lines to a GUI or other host without changing the CLI."""
+    global _reporter
+    _reporter = reporter
 
 
 def say(msg, colour=""):
     """Print one line atomically - worker threads all write to this stdout."""
     with _print_lock:
         print(f"{colour}{msg}{RESET}", flush=True)
+        if _reporter:
+            _reporter(msg, colour)
 
 
 # === Partition table ===
@@ -233,17 +245,34 @@ def release(port):
 
 # === Build ===
 
-def compile_firmware(app_slot_size):
-    """Run arduino-cli, sized to the real partition table.
+SOURCE_EXTS = {".ino", ".cpp", ".c", ".h", ".hpp", ".csv"}
+
+
+def sketch_is_fresh(sketch, build_path, binary_name):
+    """True if the compiled binary is newer than every source file."""
+    binary = os.path.join(build_path, binary_name)
+    if not os.path.exists(binary):
+        return False
+    bin_mtime = os.path.getmtime(binary)
+    for dirpath, _, filenames in os.walk(sketch):
+        for fn in filenames:
+            if os.path.splitext(fn)[1].lower() in SOURCE_EXTS:
+                if os.path.getmtime(os.path.join(dirpath, fn)) > bin_mtime:
+                    return False
+    return True
+
+
+def compile_sketch(sketch, build_path, slot_size):
+    """Run arduino-cli, sized to the sketch's real partition.
 
     `upload.maximum_size` is a board property that is NOT derived from
     partitions.csv - left alone it reads the stock 1.25MB and fails the build
-    even when the real slot has room. Passing app0's actual size keeps the
+    even when the real slot has room. Passing the actual size keeps the
     build's idea of "too big" identical to the flash layout's.
     """
     cmd = ["arduino-cli", "compile", "--fqbn", FQBN,
-           "--build-property", f"upload.maximum_size={app_slot_size}",
-           "--build-path", BUILD, SKETCH]
+            "--build-property", f"upload.maximum_size={slot_size}",
+            "--build-path", build_path, sketch]
     say(f"building: {' '.join(cmd)}", DIM)
     p = subprocess.run(cmd, cwd=os.path.join(ROOT, "arduino"))
     if p.returncode != 0:
@@ -260,6 +289,7 @@ def pack_storage(size):
     if not art:
         return None
     fresh = (os.path.exists(STORAGE_BIN) and
+             os.path.getsize(STORAGE_BIN) == size and
              os.path.getmtime(STORAGE_BIN) >= max(os.path.getmtime(a)
                                                   for a in art))
     if fresh:
@@ -283,20 +313,29 @@ def build_plan(args):
     discover the build is wrong.
     """
     table = parse_partitions(os.path.join(SKETCH, "partitions.csv"))
-    for need in ("app0", "otadata"):
+    for need in ("factory", "main", "otadata"):
         if need not in table:
             sys.exit(f"partitions.csv has no `{need}` partition")
-    app_off, app_size = table["app0"]
+    recovery_off, recovery_size = table["factory"]
+    main_off, main_size = table["main"]
     ota_off, _ = table["otadata"]
 
     if args.build:
-        compile_firmware(app_size)
+        if sketch_is_fresh(RECOVERY_SKETCH, RECOVERY_BUILD, "recovery.ino.bin"):
+            say("recovery: up to date, skipping build", DIM)
+        else:
+            compile_sketch(RECOVERY_SKETCH, RECOVERY_BUILD, recovery_size)
+        if sketch_is_fresh(SKETCH, BUILD, "badge.ino.bin"):
+            say("main: up to date, skipping build", DIM)
+        else:
+            compile_sketch(SKETCH, BUILD, main_size)
 
-    app = os.path.join(BUILD, "badge.ino.bin")
+    main_app = os.path.join(BUILD, "badge.ino.bin")
+    recovery_app = os.path.join(RECOVERY_BUILD, "recovery.ino.bin")
     boot = os.path.join(BUILD, "badge.ino.bootloader.bin")
     parts = os.path.join(BUILD, "badge.ino.partitions.bin")
     boot_app0 = os.path.join(BUILD, "boot_app0.bin")
-    for p in (app, boot, parts, boot_app0):
+    for p in (main_app, recovery_app, boot, parts, boot_app0):
         if not os.path.exists(p):
             sys.exit(f"missing build artifact: {p}\n"
                      f"drop --no-build so the sketch gets compiled")
@@ -305,30 +344,36 @@ def build_plan(args):
     # If that has drifted from the sketch's, the binary was linked and
     # size-checked against a layout that is not the one being flashed - which
     # produces badges that boot and then misbehave in ways nothing reports.
-    built_csv = os.path.join(BUILD, "partitions.csv")
-    if os.path.exists(built_csv):
-        if parse_partitions(built_csv) != table:
+    for built_csv in (os.path.join(BUILD, "partitions.csv"),
+                      os.path.join(RECOVERY_BUILD, "partitions.csv")):
+        if os.path.exists(built_csv) and parse_partitions(built_csv) != table:
             sys.exit("the build tree was compiled against a DIFFERENT "
                      "partition table than arduino/badge/partitions.csv\n"
                      "drop --no-build so it gets recompiled")
 
-    blob = open(app, "rb").read()
-    if not blob or blob[0] != 0xE9:
-        sys.exit(f"{app} is not an ESP32 image "
-                 f"(first byte 0x{blob[0]:02X} , expected 0xE9)"
-                 if blob else f"{app} is empty")
-    if len(blob) > app_size:
-        sys.exit(f"firmware is {len(blob)} bytes but app0 is only {app_size} "
-                 f"({len(blob) - app_size} bytes over)")
+    def validate_image(path, label, size):
+        blob = open(path, "rb").read()
+        if not blob or blob[0] != 0xE9:
+            sys.exit(f"{path} is not an ESP32 image "
+                     f"(first byte 0x{blob[0]:02X}, expected 0xE9)"
+                     if blob else f"{path} is empty")
+        if len(blob) > size:
+            sys.exit(f"{label} is {len(blob)} bytes but its slot is only "
+                     f"{size} ({len(blob) - size} bytes over)")
+        return len(blob)
+
+    main_bytes = validate_image(main_app, "main firmware", main_size)
+    recovery_bytes = validate_image(
+        recovery_app, "factory recovery", recovery_size)
 
     plan = [(BOOTLOADER_OFFSET, boot),
             (PARTITIONS_OFFSET, parts),
             (ota_off, boot_app0),
-            (app_off, app)]
+            (recovery_off, recovery_app),
+            (main_off, main_app)]
 
-    # boot_app0.bin is the otadata initialiser: it points the bootloader at
-    # app0. Without it a badge inherits whatever otadata was there before and
-    # can come up running a stale image out of the other slot.
+    # boot_app0.bin is the Arduino core's otadata initialiser. Sequence 1
+    # selects ota_0 (`main`) instead of the factory recovery application.
     if args.storage and "storage" in table:
         st_off, st_size = table["storage"]
         img = pack_storage(st_size)
@@ -342,13 +387,23 @@ def build_plan(args):
                 YELLOW)
 
     total = sum(os.path.getsize(p) for _, p in plan)
-    say(f"firmware : {os.path.relpath(app, ROOT)}")
-    say(f"app      : {len(blob)} bytes of {app_size} "
-        f"({100.0 * len(blob) / app_size:.0f}% of app0)")
+    say(f"main     : {main_bytes} bytes of {main_size} "
+        f"({100.0 * main_bytes / main_size:.0f}%)")
+    say(f"recovery : {recovery_bytes} bytes of {recovery_size} "
+        f"({100.0 * recovery_bytes / recovery_size:.0f}%)")
     say(f"writing  : {len(plan)} regions, {total / 1024:.0f} KB per badge")
     for off, p in plan:
         say(f"    0x{off:06X}  {os.path.basename(p)}", DIM)
     return plan
+
+
+def plan_fingerprint(plan):
+    """SHA-256 of all flash artifacts so the ledger knows when code changes."""
+    h = hashlib.sha256()
+    for _, path in sorted(plan):
+        with open(path, "rb") as f:
+            h.update(f.read())
+    return h.hexdigest()[:16]
 
 
 # === Ledger ===
@@ -377,13 +432,20 @@ class Flasher:
         self.args = args
         self.lock = threading.Lock()
         self.ledger = {} if args.forget else load_ledger()
+        self.fingerprint = plan_fingerprint(plan)
         self.ok = 0
         self.failed = 0
         self.skipped = 0
 
     def known(self, mac):
         with self.lock:
-            return mac in self.ledger
+            entry = self.ledger.get(mac)
+            if not entry:
+                return False
+            # Badge has stale firmware — needs re-flash.
+            if entry.get("build") != self.fingerprint:
+                return False
+            return True
 
     def record(self, mac, port, ok):
         with self.lock:
@@ -391,6 +453,7 @@ class Flasher:
                 "port": port,
                 "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "result": "ok" if ok else "failed",
+                "build": self.fingerprint,
             }
             if ok:
                 self.ok += 1
@@ -521,13 +584,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--no-build", dest="build", action="store_false",
                     help="flash the existing build instead of compiling first")
+    ap.add_argument("--build-only", action="store_true",
+                    help="compile and validate every image, then exit without "
+                         "opening a serial port")
     ap.add_argument("--jobs", type=int, default=4,
                     help="badges to flash at once (default 4)")
     ap.add_argument("--baud", type=int, default=921600)
     ap.add_argument("--once", action="store_true",
                     help="flash what is plugged in now, then exit")
-    ap.add_argument("--reflash", action="store_true",
-                    help="flash badges even if they are in the ledger")
+    ap.add_argument("--no-reflash", dest="reflash", action="store_false",
+                    default=True,
+                    help="skip badges already in the ledger")
     ap.add_argument("--forget", action="store_true",
                     help="start a fresh ledger, forgetting past badges")
     ap.add_argument("--no-probe", dest="probe", action="store_false",
@@ -547,6 +614,9 @@ def main():
     args = ap.parse_args()
 
     plan = build_plan(args)
+    if args.build_only:
+        say("build and flash plan validated; no badges were touched", GREEN)
+        return 0
     flasher = Flasher(plan, args)
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs)

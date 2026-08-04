@@ -10,3 +10,4 @@
 paho-mqtt>=1.6
 cryptography>=41
 pyserial>=3.5
+pygame>=2.5

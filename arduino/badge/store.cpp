@@ -22,6 +22,11 @@ bool iotOnline = false;
 const uint8_t BRIGHT_PCT[] = {15, 30, 50, 75, 100};
 uint8_t brightness = BRIGHT_COUNT - 1;  // default full
 bool showBatteryIcon = true;
+bool shareWifiScans = false;
+
+char popupText[48] = "";
+
+bool displayFlipped = false;
 
 // Seeded from config.h, and only a seed: loadSettings() leaves these alone when
 // NVS has no stored network, so a blank badge comes up on the fleet AP and can
@@ -65,6 +70,9 @@ void loadSettings() {
   prefs.getString("wpw", wifiPass, sizeof(wifiPass));
   brightness = prefs.getUChar("bright", BRIGHT_COUNT - 1);
   showBatteryIcon = prefs.getBool("batt", true);
+  shareWifiScans = prefs.getBool("scanShare", false);
+  prefs.getString("popup", popupText, sizeof(popupText));
+  displayFlipped = prefs.getBool("flip", false);
   if (brightness >= BRIGHT_COUNT) brightness = BRIGHT_COUNT - 1;
   prefs.end();
 
@@ -100,6 +108,9 @@ void saveSettings() {
   prefs.putString("wpw", wifiPass);
   prefs.putUChar("bright", brightness);
   prefs.putBool("batt", showBatteryIcon);
+  prefs.putBool("scanShare", shareWifiScans);
+  prefs.putString("popup", popupText);
+  prefs.putBool("flip", displayFlipped);
   prefs.end();
   settingsDirty = false;
   LOGF("settings saved\n");
@@ -134,6 +145,8 @@ void factoryReset() {
   wifiWanted = false;
   brightness = BRIGHT_COUNT - 1;
   showBatteryIcon = true;
+  shareWifiScans = false;
+  popupText[0] = '\0';
   for (int i = 0; i < MENU_COUNT; i++) menus[i].index = 0;
   regenerateClientId();
 

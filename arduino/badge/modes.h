@@ -10,6 +10,7 @@
 #include <Arduino_GFX_Library.h>
 
 #include "config.h"
+#include "types.h"
 
 #define SCENE_COUNT 5
 
@@ -48,3 +49,8 @@ bool modesTick(uint32_t now);
 
 // Called when a mode starts, to reset per-mode animation state.
 void modesEnter(uint32_t now);
+void modesExit();
+
+// Lets interactive modes consume gestures before the UI treats them as an
+// exit. The WiFi scanner uses vertical swipes to browse its result list.
+bool modesHandleGesture(Gesture gesture);

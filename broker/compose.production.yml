@@ -1,0 +1,127 @@
+# Production stack for an Oracle Cloud Always Free instance.
+#
+# Standalone by design: run it with -f compose.production.yml alone, never
+# layered over compose.yml. The bench stack in compose.yml keeps working
+# exactly as before, publishing 1883/9001 on a developer's laptop; nothing here
+# changes it.
+#
+#   docker compose -f compose.production.yml --env-file .env.production up -d
+#
+# Every image below is a multi-arch official image with a linux/arm64 variant,
+# so this runs unmodified on an Ampere A1 (arm64) Always Free shape as well as
+# on the amd64 E2.1.Micro shape.
+#
+# Published ports, and nothing else:
+#   80/tcp    Caddy - ACME HTTP-01 challenge and the redirect to HTTPS
+#   443/tcp   Caddy - HTTPS for the controller, WSS for browser MQTT
+#   8883/tcp  Mosquitto - native MQTT over TLS for ESP32 badges
+#
+# Mosquitto's plain listeners are deliberately unpublished: 9001 is reachable
+# only from the internal Docker network (Caddy proxies to it) and 1883 is bound
+# to the container's own loopback for healthchecks.
+
+name: dc34-broker-prod
+
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    container_name: dc34-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # ACME account keys and issued certificates. Losing this volume means
+      # re-issuing from scratch and counting against Let's Encrypt rate
+      # limits, so it is included in scripts/backup.sh.
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN must be set in .env.production}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL must be set in .env.production}
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+      TLS_DIRECTIVE: ${TLS_DIRECTIVE:-}
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:2019/config/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: &logging
+      driver: json-file
+      options:
+        # An Always Free boot volume is small and this box is unattended.
+        max-size: "10m"
+        max-file: "5"
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    container_name: dc34-mqtt-prod
+    restart: unless-stopped
+    # Waits for the first ACME certificate, then supervises the broker and
+    # restarts it in place when a renewal lands (Mosquitto binds its
+    # certificate at listener start). See scripts/mosquitto-entrypoint.sh.
+    command: ["/bin/sh", "/usr/local/bin/mosquitto-entrypoint.sh"]
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./config:/mosquitto/config:ro
+      - ./scripts/mosquitto-entrypoint.sh:/usr/local/bin/mosquitto-entrypoint.sh:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+      - mqtt_certs:/mosquitto/certs:ro
+    environment:
+      HEALTH_PASSWORD: ${HEALTH_PASSWORD:?run scripts/setup-production.sh to generate broker credentials}
+      CERT_WATCH_INTERVAL: ${CERT_WATCH_INTERVAL:-300}
+    networks:
+      - edge
+    healthcheck:
+      # Uses the loopback-only listener, so a passing healthcheck also proves
+      # authentication and the ACL are loaded. start_period is generous
+      # because a first deploy legitimately waits on the ACME challenge.
+      test:
+        - CMD-SHELL
+        - mosquitto_sub -h 127.0.0.1 -p 1883 -u health -P "$${HEALTH_PASSWORD}" -t '$$SYS/broker/uptime' -C 1 -W 3 >/dev/null
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    logging: *logging
+
+  # Copies Caddy's ACME certificate into the volume Mosquitto reads. It holds
+  # no privileges beyond root inside its own container: no Docker socket, no
+  # host mounts, and read-only access to Caddy's store.
+  certsync:
+    image: alpine:3.20
+    container_name: dc34-certsync
+    restart: unless-stopped
+    depends_on:
+      - caddy
+    command: ["/bin/sh", "/usr/local/bin/certsync.sh"]
+    volumes:
+      - ./scripts/certsync.sh:/usr/local/bin/certsync.sh:ro
+      - caddy_data:/caddy-data:ro
+      - mqtt_certs:/mqtt-certs
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN must be set in .env.production}
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-21600}
+    # No network access needed - it only moves files between two volumes.
+    network_mode: none
+    logging: *logging
+
+networks:
+  edge:
+    driver: bridge
+
+volumes:
+  # Retained state, subscriptions and the persistence database.
+  mosquitto_data:
+  mosquitto_log:
+  # ACME account key and issued certificates.
+  caddy_data:
+  caddy_config:
+  # The certificate handoff between Caddy and Mosquitto.
+  mqtt_certs:

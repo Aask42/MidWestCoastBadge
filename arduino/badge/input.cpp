@@ -3,6 +3,7 @@
 #include "input.h"
 
 #include <Wire.h>
+#include "store.h"
 
 int startX = 0, startY = 0, lastX = 0, lastY = 0;
 
@@ -164,6 +165,13 @@ static TouchState touchRead(int &x, int &y) {
   x = ((b[2] & 0x0F) << 8) | b[3];
   y = ((b[4] & 0x0F) << 8) | b[5];
   if (x >= SCREEN_W || y >= SCREEN_H) return T_FAILED;
+
+  // Touch controller reports physical coordinates; invert when display is
+  // rotated 180° so gestures and tap zones stay correct.
+  if (displayFlipped) {
+    x = SCREEN_W - 1 - x;
+    y = SCREEN_H - 1 - y;
+  }
 
   return T_DOWN;
 }

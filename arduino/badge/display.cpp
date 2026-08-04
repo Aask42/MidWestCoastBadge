@@ -34,6 +34,7 @@ bool displayBegin() {
 
   const bool ok = panel->begin(SPI_SPEED);
   Serial.printf("panel->begin() %s\n", ok ? "ok" : "FAILED");
+  if (displayFlipped) panel->setRotation(2);
 
   // The strip buffer is optional: if it will not allocate we still run, just
   // without animation. Never draw through a null framebuffer.
@@ -52,6 +53,12 @@ void displayApplyBrightness() {
   } else {
     digitalWrite(TFT_BL, HIGH);
   }
+}
+
+void displayFlip() {
+  displayFlipped = !displayFlipped;
+  panel->setRotation(displayFlipped ? 2 : 0);
+  markDirty();
 }
 
 // === Primitives ===
@@ -118,12 +125,15 @@ void drawScreen(Arduino_GFX *g, int id, int ox, int oy) {
     }
   } else {
     drawMenu(g, menus[id], ox, oy);
+    if (showBatteryIcon) drawBatteryIcon(g, ox, oy, true);
     return;
   }
 
   // Only over home and the modes: a menu has its own nav bar in that corner,
   // and the gauge would sit on top of it.
-  if (showBatteryIcon) drawBatteryIcon(g, ox, oy);
+  const bool scanner = id == SCREEN_HOME && modeActive &&
+                       activeMode() == MODE_WIFI_SCAN;
+  if (showBatteryIcon && !scanner) drawBatteryIcon(g, ox, oy);
 }
 
 // Composites up to two screens at the given offsets and pushes the result to

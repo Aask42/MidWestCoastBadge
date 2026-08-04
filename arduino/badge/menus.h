@@ -32,8 +32,11 @@
 #define IOT_SECRET 5
 #define IOT_STATUS 6
 
-#define SET_ROWS 1
+#define SET_ROWS 4
 #define SET_NAME 0
+#define SET_SCAN_SHARE 1
+#define SET_MQTT 2
+#define SET_POPUP 3
 
 // Factory reset lives here, under the network settings it mostly exists to
 // clear. It is two-tap armed and reboots afterwards - see activateItem().

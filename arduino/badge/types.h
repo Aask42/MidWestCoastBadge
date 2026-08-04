@@ -29,7 +29,7 @@ enum TouchState { T_FAILED, T_UP, T_DOWN };
 //   KB_REDRAW  - the key faces changed too (case or page), so the whole screen
 //                is rebuilt.
 //   KB_DONE    - OK was pressed and the value is committed; close the keyboard.
-enum KbResult { KB_IGNORED, KB_ENTRY, KB_REDRAW, KB_DONE };
+enum KbResult { KB_IGNORED, KB_ENTRY, KB_REDRAW, KB_DONE, KB_CANCEL };
 
 // Case is a three-state cycle on one key rather than a shift plus a separate
 // caps lock: KC_SHIFT applies to exactly the next character and then falls back

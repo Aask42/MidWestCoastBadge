@@ -2,16 +2,33 @@
 
 #include "modes.h"
 
+#include "ble.h"
 #include "display.h"
+#include "game2048.h"
+#include "input.h"
 #include "menus.h"
 #include <sys/time.h>
 
 #include <LittleFS.h>
 
 #include "store.h"
+#include "mqtt.h"
+#include "net.h"
 
 static uint8_t slideIndex = 0;
 static uint32_t lastFrame = 0;
+static uint32_t scanRefreshAt = 0;
+static uint8_t scanOffset = 0;
+
+#define WIFI_SCAN_VISIBLE 5
+
+static uint8_t bleOffset = 0;
+#define BLE_SCAN_VISIBLE 6
+
+static uint8_t scanMaxOffset() {
+  const uint8_t count = wifiScanCount();
+  return count > WIFI_SCAN_VISIBLE ? count - WIFI_SCAN_VISIBLE : 0;
+}
 
 // === Mode rendering ===
 // Stand-ins until real assets exist. Everything is procedural so it costs no
@@ -542,6 +559,132 @@ void drawModeScreen(Arduino_GFX *g, int ox, int oy) {
     case MODE_SLIDESHOW:
       drawScene(g, ox, oy, slideIndex);
       return;
+    case MODE_WIFI_SCAN: {
+      g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_BG);
+      printCentered(g, "WIFI SCANNER", ox, oy + 18, 2, C_ACCENT);
+      g->drawFastHLine(ox + 12, oy + 44, SCREEN_W - 24, C_DIM);
+      const uint8_t count = wifiScanCount();
+      if (wifiScanRunning()) {
+        const char *dots[] = {"scanning", "scanning.", "scanning..", "scanning..."};
+        printCentered(g, dots[(millis() / 250) & 3], ox, oy + 58, 1, C_NAV);
+      } else if (!count) {
+        printCentered(g, "no networks seen", ox, oy + 88, 1, C_DIM);
+      }
+      if (scanOffset > scanMaxOffset()) scanOffset = scanMaxOffset();
+      const uint8_t remaining = count > scanOffset ? count - scanOffset : 0;
+      const uint8_t visible =
+          remaining < WIFI_SCAN_VISIBLE ? remaining : WIFI_SCAN_VISIBLE;
+      for (uint8_t i = 0; i < visible; i++) {
+        const uint8_t index = scanOffset + i;
+        const int y = oy + 58 + i * 42;
+        char line[48];
+        snprintf(line, sizeof(line), "%c %-22.22s %4d",
+                 wifiScanSecure(index) ? '*' : ' ', wifiScanSsid(index),
+                 (int)wifiScanRssi(index));
+        g->setTextSize(1);
+        g->setTextColor(index == 0 ? C_ACCENT : C_FG);
+        g->setCursor(ox + 8, y);
+        g->print(line);
+
+        snprintf(line, sizeof(line), "ch%-2u %-5s %s",
+                 (unsigned)wifiScanChannel(index), wifiScanAuth(index),
+                 wifiScanBssid(index));
+        g->setTextColor(C_DIM);
+        g->setCursor(ox + 8, y + 12);
+        g->print(line);
+
+        int strength = ((int)wifiScanRssi(index) + 100) * 2;
+        if (strength < 0) strength = 0;
+        if (strength > 100) strength = 100;
+        g->drawRect(ox + 8, y + 25, SCREEN_W - 16, 5, C_DIM);
+        g->fillRect(ox + 9, y + 26,
+                    (SCREEN_W - 18) * strength / 100, 3,
+                    strength >= 70 ? C_OK : (strength >= 35 ? C_NAV : C_WARN));
+      }
+      char summary[32];
+      if (count) {
+        snprintf(summary, sizeof(summary), "%u-%u/%u  count this session %u",
+                 (unsigned)scanOffset + 1,
+                 (unsigned)(scanOffset + visible), (unsigned)count,
+                 (unsigned)wifiScanSessionCount());
+      } else {
+        snprintf(summary, sizeof(summary), "0 now  session %u",
+                 (unsigned)wifiScanSessionCount());
+      }
+      printCentered(g, summary, ox, oy + SCREEN_H - 46, 1, C_DIM);
+      printCentered(g, shareWifiScans ? "SHARING TO FLEET" : "PRIVATE / LOCAL",
+            ox, oy + SCREEN_H - 32, 1,
+            shareWifiScans ? C_OK : C_NAV);
+      printCentered(g, "up/down scroll  tap exits", ox,
+            oy + SCREEN_H - 18, 1, C_DIM);
+      return;
+    }
+    case MODE_BLE_SCAN: {
+      g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_BG);
+      printCentered(g, "BADGE SCANNER", ox, oy + 10, 2, C_ACCENT);
+
+      const uint8_t nearby = bleNearbyCount();
+      char headline[32];
+      snprintf(headline, sizeof(headline), "%u nearby now", (unsigned)nearby);
+      printCentered(g, headline, ox, oy + 38, 1,
+                    nearby ? C_OK : C_DIM);
+      g->drawFastHLine(ox + 12, oy + 52, SCREEN_W - 24, C_DIM);
+
+      const uint8_t total = blePeerCount();
+      const uint8_t maxOff = total > BLE_SCAN_VISIBLE
+                                 ? total - BLE_SCAN_VISIBLE : 0;
+      if (bleOffset > maxOff) bleOffset = maxOff;
+      const uint8_t remaining = total > bleOffset ? total - bleOffset : 0;
+      const uint8_t visible = remaining < BLE_SCAN_VISIBLE
+                                  ? remaining : BLE_SCAN_VISIBLE;
+      for (uint8_t i = 0; i < visible; i++) {
+        const uint8_t idx = bleOffset + i;
+        const int y = oy + 58 + i * 34;
+        const uint32_t age = blePeerAgeMs(idx);
+        const bool isNearby = age <= 30000;
+        char line[32];
+        snprintf(line, sizeof(line), "%s  %ddBm", blePeerId(idx),
+                 (int)blePeerRssi(idx));
+        g->setTextSize(1);
+        g->setTextColor(isNearby ? C_FG : C_DIM);
+        g->setCursor(ox + 8, y);
+        g->print(line);
+
+        char ago[16];
+        if (age < 1000) snprintf(ago, sizeof(ago), "now");
+        else if (age < 60000) snprintf(ago, sizeof(ago), "%us ago",
+                                       (unsigned)(age / 1000));
+        else snprintf(ago, sizeof(ago), "%um ago",
+                      (unsigned)(age / 60000));
+        g->setCursor(ox + 8, y + 12);
+        g->setTextColor(C_DIM);
+        g->print(ago);
+
+        int strength = ((int)blePeerRssi(idx) + 100) * 2;
+        if (strength < 0) strength = 0;
+        if (strength > 100) strength = 100;
+        g->drawRect(ox + 8, y + 25, SCREEN_W - 16, 4, C_DIM);
+        g->fillRect(ox + 9, y + 26,
+                    (SCREEN_W - 18) * strength / 100, 2,
+                    isNearby ? C_OK : C_DIM);
+      }
+
+      if (!total) {
+        printCentered(g, "no badges seen yet", ox, oy + 100, 1, C_DIM);
+        printCentered(g, "BLE is scanning passively", ox, oy + 120, 1, C_DIM);
+      }
+
+      char summary[40];
+      snprintf(summary, sizeof(summary), "%u seen this session",
+               (unsigned)bleSessionCount());
+      printCentered(g, summary, ox, oy + SCREEN_H - 32, 1, C_DIM);
+      printCentered(g, "up/down scroll  tap exits", ox,
+                    oy + SCREEN_H - 18, 1, C_DIM);
+      return;
+    }
+    case MODE_GAME_2048:
+      drawGame2048(g, ox, oy);
+      return;
     default:
       // Any other row is one animation held on its own. It keeps moving - the
       // only thing this turns off is advancing to the next scene. A frozen
@@ -578,12 +721,91 @@ bool timeIsSynced() {
 }
 
 void modesEnter(uint32_t now) {
-  (void)now;
   lastFrame = 0;  // force a frame on the next tick
+  if (activeMode() == MODE_WIFI_SCAN) {
+    scanOffset = 0;
+    wifiScanModeEnter();
+    scanRefreshAt = now + 500;
+  }
+  if (activeMode() == MODE_BLE_SCAN) {
+    bleOffset = 0;
+  }
+  if (activeMode() == MODE_GAME_2048) {
+    game2048Reset();
+  }
+}
+
+void modesExit() {
+  if (activeMode() == MODE_WIFI_SCAN) wifiScanModeExit();
+}
+
+bool modesHandleGesture(Gesture gesture) {
+  if (activeMode() == MODE_WIFI_SCAN) {
+    if (gesture == G_UP) {
+      const uint8_t maxOffset = scanMaxOffset();
+      if (scanOffset < maxOffset) scanOffset++;
+      LOGF("wifi scan: scroll %u/%u\n", (unsigned)scanOffset,
+           (unsigned)maxOffset);
+      return true;
+    }
+    if (gesture == G_DOWN) {
+      if (scanOffset > 0) scanOffset--;
+      LOGF("wifi scan: scroll %u/%u\n", (unsigned)scanOffset,
+           (unsigned)scanMaxOffset());
+      return true;
+    }
+    return false;
+  }
+  if (activeMode() == MODE_BLE_SCAN) {
+    const uint8_t total = blePeerCount();
+    const uint8_t maxOff = total > BLE_SCAN_VISIBLE
+                               ? total - BLE_SCAN_VISIBLE : 0;
+    if (gesture == G_UP) {
+      if (bleOffset < maxOff) bleOffset++;
+      return true;
+    }
+    if (gesture == G_DOWN) {
+      if (bleOffset > 0) bleOffset--;
+      return true;
+    }
+    return false;
+  }
+  if (activeMode() == MODE_GAME_2048) {
+    return game2048HandleGesture(gesture, lastX, lastY);
+  }
+  return false;
 }
 
 bool modesTick(uint32_t now) {
   bool dirty = false;
+
+  if (activeMode() == MODE_WIFI_SCAN) {
+    if (wifiScanTick()) {
+      mqttPublishWifiScan();
+      scanRefreshAt = now + WIFI_SCAN_REFRESH_MS;
+      dirty = true;
+    }
+    if (!wifiScanRunning() && !mqttIsConnecting() &&
+      (int32_t)(now - scanRefreshAt) >= 0) {
+      wifiScanStart();
+      scanRefreshAt = now + WIFI_SCAN_REFRESH_MS;
+      dirty = true;
+    }
+    if (wifiScanRunning() && now - lastFrame >= 250) {
+      lastFrame = now;
+      dirty = true;
+    }
+    return dirty;
+  }
+
+  if (activeMode() == MODE_BLE_SCAN) {
+    if (now - lastFrame >= 1000) {
+      lastFrame = now;
+      dirty = true;
+    }
+    return dirty;
+  }
+
   const uint32_t phase = syncPhaseMs();
 
   // Slideshow index comes from the shared phase, not from a local counter, so

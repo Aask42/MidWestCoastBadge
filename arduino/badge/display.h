@@ -30,6 +30,9 @@ bool displayBegin();
 // it is persisted; this just pushes the current value at the hardware.
 void displayApplyBrightness();
 
+// Toggle 180° display rotation and save the setting.
+void displayFlip();
+
 // === Primitives ===
 int textWidth(const char *s, uint8_t size);
 void printCentered(Arduino_GFX *g, const char *s, int ox, int y, uint8_t size,

@@ -28,5 +28,20 @@ void authBegin();
 bool authVerify(const char *payload, size_t len, const char **body,
                 size_t *bodyLen);
 
+// Owner commands use the code printed on the badge rather than the fleet
+// operator key. They are accepted only on the per-badge /owner topic and are
+// restricted by mqtt.cpp to name, show, and popup operations.
+//
+//     o1\n<seq>\n<base64 HMAC-SHA256>\n<command json>
+//
+// The HMAC covers "o1\n<seq>\n<command json>". Its key is derived once from
+// badgeCode with PBKDF2-HMAC-SHA256(100000), salted by badgeId.
+bool authVerifyOwner(const char *payload, size_t len, const char **body,
+                     size_t *bodyLen);
+
+// Re-derives the cached owner key and clears its replay counter after the code
+// is rotated from the badge screen.
+void authOwnerCodeChanged();
+
 // Fingerprint of the trusted key, for the status doc and the serial banner.
 const char *authFingerprint();

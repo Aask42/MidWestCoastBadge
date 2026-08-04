@@ -8,6 +8,7 @@
 #include "keyboard.h"
 #include "menus.h"
 #include "modes.h"
+#include "ble.h"
 #include "net.h"
 #include "store.h"
 
@@ -17,6 +18,9 @@ bool modeActive = false;
 uint32_t lastActivity = 0;
 
 static uint32_t splashStart = 0;
+static uint32_t splashLastFrame = 0;
+static float splashPhase = 0.0f;
+static float homePhase = 0.0f;
 
 static char bannerText[96] = "";
 static uint32_t bannerUntil = 0;
@@ -70,29 +74,51 @@ void drawBanner(Arduino_GFX *g, int ox, int oy) {
   }
 }
 
-// The credits. Framed in accent like the banner so it reads as something the
-// badge chose to show rather than another menu, and laid out around the name
-// because that is the part worth reading from across a table.
+// QR code for https://midwestcoast.best/badge — 25x25 modules, packed 1bpp.
+static const uint8_t QR_SIZE = 25;
+static const uint8_t QR_DATA[] PROGMEM = {
+  0xFE,0x66,0x3F,0x80, 0x82,0x68,0xA0,0x80, 0xBA,0x62,0xAE,0x80,
+  0xBA,0xCD,0xAE,0x80, 0xBA,0xD2,0xAE,0x80, 0x82,0x24,0xA0,0x80,
+  0xFE,0xAA,0xBF,0x80, 0x00,0x2B,0x00,0x00, 0xC7,0x4F,0x0C,0x00,
+  0x71,0x71,0x1F,0x00, 0xBF,0xAB,0x15,0x80, 0x29,0x58,0xFC,0x80,
+  0x96,0xDB,0x30,0x80, 0xD1,0x15,0x91,0x00, 0xAE,0xE7,0xFD,0x80,
+  0xAC,0x33,0xB6,0x80, 0xB2,0x1F,0xFA,0x00, 0x00,0xF9,0x88,0x00,
+  0xFE,0x9A,0xA8,0x80, 0x82,0xA1,0x89,0x00, 0xBA,0x47,0xFB,0x00,
+  0xBA,0x73,0xE1,0x80, 0xBA,0x42,0x46,0x80, 0x82,0x9A,0xF8,0x80,
+  0xFE,0x90,0x84,0x80,
+};
+
+static void drawQr(Arduino_GFX *g, int cx, int cy, uint8_t scale) {
+  const int total = QR_SIZE * scale;
+  const int x0 = cx - total / 2;
+  const int y0 = cy - total / 2;
+  // White background with 1-module quiet zone.
+  g->fillRect(x0 - scale, y0 - scale, total + scale * 2, total + scale * 2, 0xFFFF);
+  const int bytesPerRow = (QR_SIZE + 7) / 8;
+  for (uint8_t r = 0; r < QR_SIZE; r++) {
+    for (uint8_t c = 0; c < QR_SIZE; c++) {
+      if (pgm_read_byte(&QR_DATA[r * bytesPerRow + c / 8]) & (1 << (7 - (c & 7))))
+        g->fillRect(x0 + c * scale, y0 + r * scale, scale, scale, 0x0000);
+    }
+  }
+}
+
+// The credits. Reached from the bottom swipe or by holding on the home screen.
 void drawCredits(Arduino_GFX *g, int ox, int oy) {
   g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_BG);
   g->drawRect(ox + 6, oy + 6, SCREEN_W - 12, SCREEN_H - 12, C_ACCENT);
   g->drawRect(ox + 7, oy + 7, SCREEN_W - 14, SCREEN_H - 14, C_ACCENT);
 
-  printCentered(g, "Made by", ox, oy + 52, 1, C_DIM);
+  printCentered(g, "Made by", ox, oy + 16, 1, C_DIM);
+  printCentered(g, CREDITS_NAME1, ox, oy + 30, 2, C_FG);
+  printCentered(g, CREDITS_NAME2, ox, oy + 52, 2, C_FG);
+  printCentered(g, CREDITS_FOR, ox, oy + 74, 1, C_DIM);
+  printCentered(g, CREDITS_AKA, ox, oy + 88, 1, C_ACCENT);
 
-  // Two lines at size 3, because the name is the whole point of the screen and
-  // should not be the smallest thing on it: "AMELIA WIETTING" on one line only
-  // fits down at size 1, which is the size everything else here already is.
-  printCentered(g, CREDITS_NAME1, ox, oy + 74, 3, C_FG);
-  printCentered(g, CREDITS_NAME2, ox, oy + 108, 3, C_FG);
+  drawQr(g, ox + SCREEN_W / 2, oy + 180, 5);
 
-  printCentered(g, CREDITS_FOR, ox, oy + 150, 1, C_DIM);
-  printCentered(g, CREDITS_AKA, ox, oy + 178, 1, C_ACCENT);
-
-  printCentered(g, CREDITS_URL, ox, oy + 214, 2, C_NAV);
-
-  printCentered(g, "v" BADGE_VERSION, ox, oy + SCREEN_H - 42, 1, C_DIM);
-  printCentered(g, "touch to return", ox, oy + SCREEN_H - 26, 1, C_DIM);
+  printCentered(g, "midwestcoast.best/badge", ox, oy + SCREEN_H - 42, 1, C_NAV);
+  printCentered(g, "v" BADGE_VERSION "  touch to return", ox, oy + SCREEN_H - 26, 1, C_DIM);
 }
 
 // The four swipe affordances drawn around the edge of the home screen.
@@ -105,7 +131,7 @@ void drawHomeHints(Arduino_GFX *g, int ox, int oy) {
   snprintf(buf, sizeof(buf), "Mode %s", gestureArrow(G_DOWN));
   printCentered(g, buf, ox, oy + 10, 1, C_FG);
 
-  snprintf(buf, sizeof(buf), "IoT Config %s", gestureArrow(G_UP));
+  snprintf(buf, sizeof(buf), "Credits %s", gestureArrow(G_UP));
   printCentered(g, buf, ox, oy + SCREEN_H - 18, 1, C_FG);
 
   // Side hints name their menu now that both edges lead somewhere real.
@@ -122,13 +148,69 @@ void drawHomeHints(Arduino_GFX *g, int ox, int oy) {
   printStacked(g, "SYSTEM", ox + SCREEN_W - 10, cy, C_DIM);
 }
 
+static void splashLineParity(Arduino_GFX *g, int x0, int y0, int x1, int y1,
+                             uint16_t color, int parity) {
+  int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+  int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+  int err = dx + dy;
+  for (;;) {
+    if ((x0 & 1) == parity) g->drawPixel(x0, y0, color);
+    if (x0 == x1 && y0 == y1) break;
+    const int twice = 2 * err;
+    if (twice >= dy) {
+      err += dy;
+      x0 += sx;
+    }
+    if (twice <= dx) {
+      err += dx;
+      y0 += sy;
+    }
+  }
+}
+
+static void splashFrame(Arduino_GFX *g, int ox, int oy, float scale,
+                        int disparity, uint16_t color, int parity) {
+  const int cx = ox + SCREEN_W / 2 + (parity ? disparity : -disparity);
+  const int cy = oy + SCREEN_H / 2;
+  const int halfW = (int)(scale * 108.0f);
+  const int halfH = (int)(scale * 142.0f);
+  splashLineParity(g, cx - halfW, cy - halfH, cx + halfW, cy - halfH,
+                   color, parity);
+  splashLineParity(g, cx + halfW, cy - halfH, cx + halfW, cy + halfH,
+                   color, parity);
+  splashLineParity(g, cx + halfW, cy + halfH, cx - halfW, cy + halfH,
+                   color, parity);
+  splashLineParity(g, cx - halfW, cy + halfH, cx - halfW, cy - halfH,
+                   color, parity);
+}
+
+static void drawSplash(Arduino_GFX *g, int ox, int oy) {
+  g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_BG);
+
+  for (int i = 0; i < 8; i++) {
+    const float depth = fmodf((float)i / 8.0f + splashPhase, 1.0f);
+    const float scale = 0.12f + depth * depth * 0.88f;
+    const int disparity = 1 + (int)((1.0f - depth) * 5.0f);
+    splashFrame(g, ox, oy, scale, disparity, C_ACCENT, 0);
+    splashFrame(g, ox, oy, scale, disparity, C_NAV, 1);
+  }
+
+  // A quiet band keeps the identity readable while the stereo tunnel moves
+  // through and behind it.
+  g->fillRect(ox, oy + 112, SCREEN_W, 96, C_BG);
+  printCentered(g, "MIDWESTCOAST", ox, oy + 122, 2, C_FG);
+  printCentered(g, "2026", ox, oy + 151, 4, C_ACCENT);
+  printCentered(g, "DEF CON 34", ox, oy + 190, 1, C_NAV);
+  printCentered(g, "By: Aask", ox, oy + 210, 1, C_FG);
+  printCentered(g, "swipe to navigate", ox, oy + 236, 1, C_DIM);
+  printCentered(g, "v" BADGE_VERSION, ox, oy + SCREEN_H - 18, 1, C_DIM);
+}
+
 void drawHome(Arduino_GFX *g, int ox, int oy) {
   g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_BG);
 
   if (splashActive) {
-    printCentered(g, "DEF CON 34", ox, oy + 130, 3, C_ACCENT);
-    printCentered(g, "swipe to navigate", ox, oy + 170, 1, C_DIM);
-    printCentered(g, "v" BADGE_VERSION, ox, oy + SCREEN_H - 20, 1, C_DIM);
+    drawSplash(g, ox, oy);
     return;  // splash stays clean: no edge hints competing with the title
   }
 
@@ -137,6 +219,16 @@ void drawHome(Arduino_GFX *g, int ox, int oy) {
   printCentered(g, modeItems[activeMode()], ox, oy + 156, 2, C_FG);
   printCentered(g, "tap to show", ox, oy + 178, 1, C_ACCENT);
 
+  // Animated ring behind the mode label.
+  const int cx = ox + SCREEN_W / 2;
+  const int cy = oy + 150;
+  const float pulse = 0.5f + 0.5f * sinf(homePhase * TWO_PI);
+  const int r = 52 + (int)(pulse * 8.0f);
+  const uint8_t bright = (uint8_t)(40 + pulse * 30);
+  const uint16_t ring = ((bright >> 3) << 11) | ((bright >> 2) << 5) | (bright >> 3);
+  g->drawCircle(cx, cy, r, ring);
+  g->drawCircle(cx, cy, r + 1, ring);
+
   // Status strip. Whether the badge is on the network, and who it is, are the
   // two things worth being able to check at a glance rather than by diving
   // three swipes deep into a menu.
@@ -144,8 +236,16 @@ void drawHome(Arduino_GFX *g, int ox, int oy) {
   snprintf(line, sizeof(line), "wifi %s", wifiStateText());
   printCentered(g, line, ox, oy + 196, 1,
                 wifiIsConnected() ? C_OK : C_DIM);
+
+  const uint8_t nearby = bleNearbyCount();
+  if (nearby) {
+    snprintf(line, sizeof(line), "%u badge%s nearby", (unsigned)nearby,
+             nearby == 1 ? "" : "s");
+    printCentered(g, line, ox, oy + 208, 1, C_OK);
+  }
+
   snprintf(line, sizeof(line), "id %s  secret %s", badgeId, badgeCode);
-  printCentered(g, line, ox, oy + 210, 1, C_DIM);
+  printCentered(g, line, ox, oy + 222, 1, C_DIM);
 
   drawHomeHints(g, ox, oy);
 }
@@ -190,6 +290,11 @@ void handleGesture(Gesture g) {
   // on waking up meant every trip into a menu cost one extra gesture once the
   // badge had been sitting for MODE_IDLE_MS, which is most of the time.
   if (modeActive) {
+    if (modesHandleGesture(g)) {
+      render();
+      return;
+    }
+    modesExit();
     modeActive = false;
     current = SCREEN_HOME;
     navClear();  // running a mode ends the history; back from home is nowhere
@@ -207,6 +312,10 @@ void handleGesture(Gesture g) {
         case KB_ENTRY: redrawKbEntry(); break;
         case KB_REDRAW: render(); break;
         case KB_DONE: slideTo(navPop(), G_DOWN); break;
+        case KB_CANCEL:
+          LOGF("edit '%s' cancelled by button\n", kbTitle());
+          slideTo(navPop(), G_DOWN);
+          break;
         case KB_IGNORED: LOGF("kb tap %d,%d hit nothing\n", lastX, lastY); break;
       }
       return;
@@ -255,6 +364,18 @@ void handleGesture(Gesture g) {
     if (current >= 0) {
       Menu &m = menus[current];
       LOGF("tap at %d,%d\n", lastX, lastY);
+      if (lastY >= NAV_Y) {
+        // FLIP button in the nav bar's right corner.
+        if (lastX >= SCREEN_W - 46) {
+          displayFlip();
+          render();
+          return;
+        }
+        menusDisarmReset();
+        LOGF("%s: BACK tapped\n", m.title);
+        slideTo(navPop(), m.retreat);
+        return;
+      }
       // Guarded rather than relying on the division: C truncates toward zero,
       // so a tap on the title bar above the list would otherwise land on row 0
       // and silently activate it.
@@ -309,11 +430,18 @@ void handleGesture(Gesture g) {
       if (startY <= EDGE_ZONE) {
         target = MENU_MODE;  // top edge
       } else if (startY >= SCREEN_H - EDGE_ZONE) {
-        target = MENU_IOT;  // bottom edge
+        navPush(SCREEN_HOME);
+        slideTo(SCREEN_CREDITS, G_UP);
+        return;
       } else {
         // Mid-screen: pull-from-edge semantics. Swiping up drags the bottom
         // menu into view, swiping down drags the top one.
-        target = (g == G_UP) ? MENU_IOT : MENU_MODE;
+        if (g == G_UP) {
+          navPush(SCREEN_HOME);
+          slideTo(SCREEN_CREDITS, G_UP);
+          return;
+        }
+        target = MENU_MODE;
       }
     } else {
       if (startX <= EDGE_ZONE) {
@@ -371,6 +499,12 @@ void handleGesture(Gesture g) {
 void uiTick(uint32_t now) {
   if (splashStart == 0) splashStart = now;
 
+  if (splashActive && now - splashLastFrame >= 100) {
+    splashLastFrame = now;
+    splashPhase = fmodf(splashPhase + 0.025f, 1.0f);
+    render();
+  }
+
   // A banner expiring puts the badge back to whatever it was doing.
   static bool bannerWas = false;
   const bool bannerNow = bannerActive();
@@ -400,6 +534,12 @@ void uiTick(uint32_t now) {
     slideTo(SCREEN_HOME, menus[current].retreat);
   }
 
+  if (current == SCREEN_KB && now - lastActivity >= EDIT_IDLE_MS) {
+    LOGF("edit '%s' idle -> cancelled\n", kbTitle());
+    lastActivity = now;
+    slideTo(navPop(), G_DOWN);
+  }
+
   // Credits time out like a menu does. Neither the menu timeout above nor the
   // mode handover below catches this screen - one wants a menu id, the other
   // wants home - so a badge whose owner walked away mid-hold would otherwise
@@ -416,6 +556,15 @@ void uiTick(uint32_t now) {
     modeActive = true;
     modesEnter(now);
     LOGF("idle -> mode %s\n", modeItems[activeMode()]);
+    render();
+  }
+
+  // Animate the idle home card before mode handover.
+  static uint32_t homeLastFrame = 0;
+  if (!splashActive && !modeActive && current == SCREEN_HOME &&
+      now - homeLastFrame >= 80) {
+    homeLastFrame = now;
+    homePhase = fmodf(homePhase + 0.012f, 1.0f);
     render();
   }
 

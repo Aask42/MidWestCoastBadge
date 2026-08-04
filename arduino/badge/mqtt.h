@@ -26,9 +26,14 @@ void mqttTick(uint32_t now);
 
 // True once connected and subscribed. Mirrors into iotOnline for the UI.
 bool mqttIsConnected();
+bool mqttIsConnecting();
 
 // Human-readable connection state for the MQTT menu's status row.
 const char *mqttStateText();
 
 // Publishes the retained state document. Safe to call when disconnected.
 void mqttPublishState();
+
+// Publishes the most recent WiFi scan once per generation when sharing is
+// enabled. Private mode clears any retained scan on the next connection.
+void mqttPublishWifiScan();

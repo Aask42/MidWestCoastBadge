@@ -2,137 +2,89 @@
 
 #include "ota.h"
 
-#include <HTTPClient.h>
-#include <Update.h>
-#include <WiFi.h>
-#include <WiFiClient.h>
+#include <Preferences.h>
+#include <esp_ota_ops.h>
 
 #include "config.h"
 #include "display.h"
-#include "store.h"
 
 static char lastError[64] = "";
 
 const char *otaLastError() { return lastError; }
 
-static void fail(const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  vsnprintf(lastError, sizeof(lastError), fmt, ap);
-  va_end(ap);
+static void fail(const char *message) {
+  snprintf(lastError, sizeof(lastError), "%s", message);
   LOGF("ota: FAILED - %s\n", lastError);
 }
 
-// Full-screen progress. Drawn straight to the panel rather than through the
-// strip compositor: the compositor re-runs every draw call four times per
-// frame, which is wasted work when the badge is otherwise busy downloading.
-static void drawProgress(int pct, const char *note) {
-  static int lastPct = -1;
-  if (pct == lastPct) return;
-  lastPct = pct;
-
-  const int bw = SCREEN_W - 48, bh = 18;
-  const int bx = 24, by = SCREEN_H / 2 - bh / 2;
-
-  if (pct <= 0) {
-    panel->fillScreen(C_BG);
-    printCentered(panel, "UPDATING", 0, by - 46, 2, C_ACCENT);
-    printCentered(panel, "do not remove power", 0, by - 22, 1, C_WARN);
+void otaConfirmBoot() {
+  Preferences request;
+  request.begin("recovery", false);
+  if (request.getString("phase", "") == "booting") {
+    const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
+    if (result == ESP_OK) {
+      request.clear();
+      LOGF("ota: new main firmware confirmed\n");
+    } else {
+      LOGF("ota: could not confirm main firmware (%d)\n", (int)result);
+    }
   }
-  panel->drawRect(bx, by, bw, bh, C_DIM);
-  if (pct > 0) {
-    panel->fillRect(bx + 2, by + 2, (bw - 4) * pct / 100, bh - 4, C_ACCENT);
-  }
-
-  char txt[48];
-  snprintf(txt, sizeof(txt), "%d%%  %s", pct, note ? note : "");
-  panel->fillRect(0, by + bh + 10, SCREEN_W, 12, C_BG);
-  printCentered(panel, txt, 0, by + bh + 10, 1, C_DIM);
+  request.end();
 }
 
 void otaRun(const char *url, const char *md5hex) {
   lastError[0] = '\0';
-
-  if (WiFi.status() != WL_CONNECTED) {
-    fail("no wifi");
-    return;
-  }
   if (!url || !url[0]) {
     fail("no url");
     return;
   }
-
-  LOGF("ota: fetching %s\n", url);
-  drawProgress(0, "connecting");
-
-  WiFiClient client;
-  HTTPClient http;
-  http.setTimeout(15000);
-  // Firmware hosts commonly 302 to a CDN; without this the badge would treat
-  // the redirect body as an image and fail the magic-byte check.
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  if (!http.begin(client, url)) {
-    fail("bad url");
+  if (strncmp(url, "http://", 7) != 0) {
+    fail("recovery requires http");
+    return;
+  }
+  if (strlen(url) >= 160) {
+    fail("url too long");
+    return;
+  }
+  if (md5hex && md5hex[0] && strlen(md5hex) != 32) {
+    fail("bad md5");
     return;
   }
 
-  const int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    fail("http %d", code);
-    http.end();
+  const esp_partition_t *recovery = esp_partition_find_first(
+      ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
+  if (!recovery) {
+    fail("recovery missing");
     return;
   }
 
-  const int len = http.getSize();
-  if (len <= 0) {
-    // Update.begin() needs a known length to size-check against the slot, and
-    // a chunked response does not give one.
-    fail("no content-length");
-    http.end();
+  Preferences request;
+  if (!request.begin("recovery", false)) {
+    fail("cannot save request");
+    return;
+  }
+  request.clear();
+  const char *md5 = md5hex ? md5hex : "";
+  const bool saved = request.putString("url", url) == strlen(url) &&
+                     request.putString("md5", md5) == strlen(md5) &&
+                     request.putString("phase", "download") == 8;
+  request.end();
+  if (!saved) {
+    fail("cannot save request");
     return;
   }
 
-  LOGF("ota: %d bytes, free slot %u\n", len,
-       (unsigned)ESP.getFreeSketchSpace());
-
-  // Checked before a single byte is written. The running image is in the other
-  // slot and is never touched, so bailing here costs nothing.
-  if (!Update.begin((size_t)len, U_FLASH)) {
-    fail("too big: %u free", (unsigned)ESP.getFreeSketchSpace());
-    http.end();
-    return;
-  }
-  if (md5hex && md5hex[0]) {
-    Update.setMD5(md5hex);
-    LOGF("ota: expecting md5 %s\n", md5hex);
-  }
-
-  Update.onProgress([](size_t done, size_t total) {
-    drawProgress(total ? (int)(done * 100 / total) : 0, "writing");
-  });
-
-  const size_t written = Update.writeStream(*http.getStreamPtr());
-  http.end();
-
-  if (written != (size_t)len) {
-    fail("short write %u/%u", (unsigned)written, (unsigned)len);
-    Update.abort();
+  if (esp_ota_set_boot_partition(recovery) != ESP_OK) {
+    fail("cannot boot recovery");
     return;
   }
 
-  // end(true) verifies the MD5 if one was set and only then flips otadata to
-  // the new slot. A corrupt download stops here, still running the old image.
-  if (!Update.end(true)) {
-    fail("verify failed (%u)", (unsigned)Update.getError());
-    return;
-  }
-
-  LOGF("ota: installed, rebooting into new slot\n");
-  drawProgress(100, "rebooting");
+  LOGF("ota: request saved, rebooting into recovery\n");
   panel->fillScreen(C_BG);
-  printCentered(panel, "UPDATED", 0, SCREEN_H / 2 - 20, 2, C_OK);
-  printCentered(panel, "rebooting...", 0, SCREEN_H / 2 + 8, 1, C_DIM);
+  printCentered(panel, "UPDATE READY", 0, SCREEN_H / 2 - 24, 2, C_OK);
+  printCentered(panel, "starting recovery...", 0, SCREEN_H / 2 + 8, 1,
+                C_DIM);
   Serial.flush();
-  delay(1200);
+  delay(750);
   ESP.restart();
 }

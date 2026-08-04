@@ -1,0 +1,23 @@
+# Secrets and runtime state. This file is deliberately local to broker/ so the
+# rules travel with the deployment even if the repo root .gitignore changes.
+
+# Generated credentials - never commit these.
+.env
+.env.production
+.env.*
+!.env.production.example
+
+# Mosquitto password databases (hashed, but still credential material).
+config/passwd
+config/passwd.production
+config/acl.production.conf
+
+# Local bind-mounted runtime state (production uses named volumes instead).
+data/
+log/
+certs/
+
+# Backup archives and rollback state written by scripts/.
+backups/
+.rollback-state
+compose.rollback.yml

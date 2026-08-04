@@ -75,6 +75,7 @@ static void handle(char *s) {
   } else if (!strcmp(tok[0], "show") && n >= 2) {
     const int v = atoi(tok[1]);
     if (v >= 0 && v < (int)menus[MENU_MODE].count) {
+      if (modeActive) modesExit();
       updateMenuSelection(menus[MENU_MODE], (uint8_t)v);
       saveSettings();
       modeActive = true;

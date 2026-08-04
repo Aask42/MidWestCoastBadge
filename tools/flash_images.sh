@@ -2,9 +2,8 @@
 # Build the image filesystem and flash it to a badge's `storage` partition.
 #
 # Bitmaps live on their own LittleFS partition, NOT in the firmware. That means
-# artwork is updated WITHOUT touching code, an OTA never re-sends a 150KB
-# picture that has not changed, and the same picture is not duplicated across
-# both A/B app slots.
+# artwork is updated WITHOUT touching code, and an OTA never re-sends a 150KB
+# picture that has not changed.
 #
 #   ./tools/flash_images.sh /dev/cu.usbmodemXXXX
 #
@@ -30,8 +29,8 @@ OUT="$HERE/.build/storage.bin"
 
 # Must match partitions.csv exactly. A mismatch here does not fail loudly - it
 # writes a filesystem the badge cannot mount, or overruns into coredump.
-OFFSET=0x2F0000
-SIZE=0x100000
+OFFSET=0x330000
+SIZE=0xC0000
 
 MK="$(ls ~/Library/Arduino15/packages/esp32/tools/mklittlefs/*/mklittlefs | head -1)"
 ET="$(ls ~/Library/Arduino15/packages/esp32/tools/esptool_py/*/esptool | head -1)"

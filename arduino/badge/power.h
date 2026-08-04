@@ -37,4 +37,4 @@ uint32_t uptimeSeconds();
 
 // Draws the corner badge. Caller decides whether it is wanted; see
 // showBatteryIcon in store.h.
-void drawBatteryIcon(Arduino_GFX *g, int ox, int oy);
+void drawBatteryIcon(Arduino_GFX *g, int ox, int oy, bool top = false);

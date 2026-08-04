@@ -11,25 +11,37 @@ taps — there are no buttons.
 ## Build and flash
 
 ```sh
-arduino-cli compile -u -p /dev/cu.usbmodemXXXX \
-  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc \
-  --build-property upload.maximum_size=4063232 \
-  badge
+python3 tools/mass_flash.py --build-only
+python3 tools/mass_flash.py --once
 ```
 
-Find the port with `arduino-cli board list`. It changes between replugs.
+Run those commands from the repository root. The first compiles and validates
+both applications without opening a serial port. The second performs a complete
+production flash on each connected badge.
 
-**Both extra flags matter:**
+To compile only the main application during development:
+
+```sh
+arduino-cli compile \
+  --fqbn 'esp32:esp32:esp32c3:CDCOnBoot=cdc,FlashSize=4M' \
+  --build-property upload.maximum_size=2162688 \
+  --build-path .build/arduino arduino/badge
+```
+
+**Both board properties matter:**
 
 | Flag | Why |
 |---|---|
 | `CDCOnBoot=cdc` | Puts the serial log on the USB port. Without it the sketch still builds, but the log moves to the UART pins. It also gates `Serial.setTxTimeoutMs(0)`, which is `#if`-guarded because that method only exists on `HWCDC`, not `HardwareSerial`. |
-| `upload.maximum_size=4063232` | A **separate board property from the partition table**. Left alone it still reads 1.25 MB and will fail the build once assets grow, even though the real partition has room. Keep it equal to `app0`'s size in `partitions.csv`. |
+| `FlashSize=4M` | Keeps generated bootloader and flash arguments aligned with the physical chip. |
+| `upload.maximum_size=2162688` | A separate build property from the partition table. Keep it equal to the `0x210000` main slot so an oversized image fails before flashing. |
 
 ### Dependencies
 
 - `esp32:esp32` core **3.3.11** (the LEDC API here is 3.x — `ledcAttach(pin, freq, res)`)
 - `GFX Library for Arduino` **1.6.7**
+- `NimBLE-Arduino` **2.5.1**
+- `PubSubClient` **2.8**
 
 ---
 
@@ -42,24 +54,16 @@ setting, so there is no scheme to pass on the command line.
 | Partition | Size | Notes |
 |---|---|---|
 | `nvs` | 20 K | Settings. Same offset/size as stock, so **repartitioning does not wipe it**. |
-| `otadata` | 8 K | Harmless; keeps the core's expectations satisfied. |
-| `app0` | **3968 K** | The firmware. Stock gives 1280 K. |
+| `otadata` | 8 K | Selects `main` normally and supports first-boot rollback. |
+| `factory` | **1088 K** | Immutable WiFi recovery application. |
+| `main` | **2112 K** | Normal badge firmware and feature space. |
+| `storage` | **768 K** | LittleFS artwork, independent of firmware updates. |
 | `coredump` | 64 K | How a crash on someone's lanyard gets diagnosed rather than guessed at. |
 
-The chip is 4 MB (verified with `esptool flash_id`), so 3968 K is essentially
-the ceiling. Two things the stock schemes spend it on that this badge does not
-need:
-
-- **`app1` (1.25 MB)** — a complete second copy of the firmware so an OTA
-  update can roll back if it fails to boot. This badge flashes over USB. This
-  is where most of the space comes from.
-- **`spiffs` (896 K even on `huge_app`)** — a filesystem nothing here mounts.
-  Settings live in NVS; image assets are better as `const` arrays in the app
-  partition, where the flash cache maps them directly and they can be streamed
-  to the panel without a read-into-RAM step.
-
-The trade is **no over-the-air updates.** Current usage is ~1.05 MB (25 %),
-leaving ~2.9 MB for lenticular image assets.
+The chip is 4 MB (verified with `esptool flash_id`). Recovery replaces the
+second full application slot: it can redownload `main` after an interrupted or
+failed update without reserving another 2 MB copy. The trade is that rollback
+returns to recovery, not to the previous feature firmware.
 
 To read the live table back off a badge:
 
@@ -140,10 +144,10 @@ that fires whenever any header byte goes non-zero.
 
 ### Other
 
-- **MQTT is not implemented.** The menu stores config and shows the pairing
-  secret; nothing connects. See `../PAIRING.md`.
-- **The MQTT menu is full** at 7 rows (row 6 ends at y=280, nav bar at 284).
-  A broker password field has nowhere to go without a paged menu.
+- **MQTT is implemented.** Commands are signed, state is retained, telemetry
+  is periodic, and the blocking connection handshake runs outside the UI loop.
+- Long menus paginate. MQTT includes broker, port, user, password, topic,
+  pairing secret, and live status.
 - **Slideshow sync needs a clock.** Badges agree on phase via SNTP; with no
   network they free-run from `millis()` and drift.
 
@@ -203,6 +207,8 @@ bench to HiveMQ is two fields on the MQTT screen, no reflash:
 ```
 <topic>/badge/<id>/state    retained; who this badge is and what it shows
 <topic>/badge/<id>/cmd      subscribed; commands in
+<topic>/badge/<id>/wifi     retained; most recent WiFi scan
+<topic>/badge/<id>/telemetry non-retained; runtime health samples
 ```
 
 `<topic>` is the MQTT screen's *topic* field (default `dc34`) and acts as a
@@ -212,6 +218,26 @@ public-key fingerprint.
 The retained `state` doc means a client connecting later still learns the badge
 exists without waiting for a change. A **last-will clears it**, so a badge that
 drops off doesn't leave a stale "I am here" behind.
+
+Selecting **wifi scanner** in SHOW starts passive asynchronous scans every 15
+seconds. The display lists networks strongest-first with RSSI bars, channel,
+auth mode, and BSSID; swipe up/down to browse beyond the first five. A
+`session` counter tracks unique BSSIDs seen since boot using 1 KB of RAM (up to
+256 APs), so it creates no flash wear and resets on restart.
+
+Scan sharing is private by default. Set **SETTINGS > wifi scans** to **SHARE**
+to publish observations for authenticated fleet dashboards. Returning it to
+**PRIVATE** stops publication and clears the badge's retained scan document.
+No deauthentication, association, or packet capture is performed.
+
+```json
+{"id":"68cd2517","scan":3,"sessionSeen":14,"networks":[
+  {"ssid":"con-net","bssid":"AA:BB:CC:11:22:33","channel":6,
+   "rssi":-51,"auth":"WPA2","secure":true},
+  {"ssid":"guest","bssid":"12:34:56:78:9A:BC","channel":11,
+   "rssi":-72,"auth":"OPEN","secure":false}
+]}
+```
 
 ### Verified working
 
@@ -238,14 +264,11 @@ mosquitto_pub -h 127.0.0.1 -t 'dc34/badge/<id>/cmd' -m '{"setName":"aask42"}'
 Set broker to `<cluster>.s1.eu.hivemq.cloud`, **port 8883**, plus the username
 and password from the HiveMQ access-management page. TLS engages automatically.
 
-> ⚠️ **`tlsClient.setInsecure()` is still in `mqtt.cpp`.** The connection is
-> encrypted but the certificate is **not verified**, so it is not protected
-> against an active man-in-the-middle. Fine on a bench; pin HiveMQ's CA before
-> this is used for anything real.
+TLS connections verify the broker hostname and certificate chain against ISRG
+Root X1 in `mqtt_ca.h`, matching the Let's Encrypt certificates used by the
+Oracle/Caddy deployment. Plain local development remains available on 1883.
 
-Payloads are plaintext JSON today. The sealed-envelope scheme in
-`../PAIRING.md` replaces that — which is why the pairing secret is already on
-the MQTT screen.
+Inbound commands use the signed envelope described in `../PAIRING.md`.
 
 ---
 
@@ -255,7 +278,7 @@ Publish a trigger and the badge pulls the new firmware itself:
 
 ```sh
 arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc \
-  --build-property upload.maximum_size=2031616 --output-dir out badge
+  --build-property upload.maximum_size=2162688 --output-dir out badge
 
 python3 ../tools/ota_push.py --bin out/badge.ino.bin --broker 192.168.0.241
 python3 ../tools/ota_push.py --bin out/badge.ino.bin --broker 192.168.0.241 \
@@ -273,43 +296,30 @@ mosquitto_pub -h 192.168.0.241 -t 'dc34/badge/<id>/cmd' \
 **Verified working:** a badge on v0.4.0 was updated to v0.5.0 over the air with
 no USB connection.
 
-### This cost half the app partition
+### Recovery flow
 
-OTA fundamentally needs somewhere to write the new image before booting it, so
-the partition table now carries **two** app slots instead of one:
-
-| | app space | OTA |
-|---|---|---|
-| before | 3.875 MB (one slot) | no |
-| now | 1.94 MB x2 | yes |
-
-Firmware with two 150KB images is ~1.51MB, so **~78% of a slot is used** and
-roughly three more images will fit. That is now the binding constraint.
-
-If assets outgrow it, the fix is **not** a bigger app slot — it is moving
-images into their own data partition so OTA only ever ships code. That needs
-images loaded from a filesystem rather than PROGMEM.
+The running main application stores the URL and MD5 in the `recovery` NVS
+namespace, selects the immutable factory application, and reboots. Recovery
+connects to WiFi, downloads directly into `main`, verifies the image, selects
+it, and reboots. Main confirms its first boot only after subsystem setup and the
+first render.
 
 `nvs` is unchanged at 0x9000/0x5000, so repartitioning preserved settings and
-the badge keypair. **The first install of this table must be over USB** — a
-badge on the old single-slot layout has nowhere to receive an OTA.
+the badge keypair. **The first install of this table must be a complete USB
+flash** so both recovery and main are present.
 
 ### Safety
 
-- the running image is never overwritten; a failed download changes nothing
-- size is checked against the free slot **before** any write
-- an optional **MD5 is verified before the boot flag moves**, so a truncated
-  download cannot be booted into
-- failures are published (`{"ota":"failed","err":"..."}`) — a badge that
-  silently refuses to update is worse than one that says why
-- the badge shows a progress bar and `do not remove power`
+- recovery is never overwritten by an OTA
+- download length is checked against the main slot before writing
+- an optional MD5 is verified before recovery selects main
+- power loss or a bad download leaves recovery available for another attempt
+- ESP-IDF first-boot rollback is enabled; an unconfirmed main returns to recovery
+- the panel shows download progress and actionable failure text
 
-> ⚠️ **Anyone who can publish to the broker can install firmware.** That is a
-> far bigger deal than renaming a badge, and it is unauthenticated today. The
-> sealed-envelope scheme in `../PAIRING.md` must land before this is used on a
-> network you do not control. The image is fetched over plain HTTP too, so a
-> MITM can swap it — the MD5 only protects against corruption, not an attacker,
-> since they could change both.
+> The OTA command is signed, but the image is fetched over plain HTTP and MD5
+> protects against corruption rather than a malicious image server. Keep OTA
+> serving on the trusted fleet LAN until image signatures or HTTPS land.
 
 ---
 
@@ -426,7 +436,7 @@ a bug in the dimmer should never leave you with a black screen.
 ### Screen flow
 
 ```
-boot ──► DEF CON 34 splash ──► home ──► (idle 5 s) ──► selected mode
+boot ──► MIDWESTCOAST 2026 splash ──► home ──► (idle 5 s) ──► selected mode
                                  ▲                         │
                                  └────── tap ──────────────┘
 ```
@@ -474,22 +484,21 @@ tapping the highlighted row *again* confirms it and returns home.
 
 ### MODE
 
-`slideshow` · `nametag` · `static image` · `lenticular cube`
+`nametag` · `slideshow` · `wifi scanner` · five procedural scenes · images
 
 The selection *is* the setting — `activeMode()` reads it directly.
 
 ### SETTINGS
 
-`set name` (keyboard) · `clear name`
+`set name` (keyboard)
 
 ### IoT CONFIG
 
-`broker` · `port` · `user` · `topic` · `status` (read-only) · `id`
+`broker` · `port` · `user` · `password` · `topic` · `secret` · `status`
 
 Rows show live values. `port` opens a numeric-only keyboard and is clamped to
-1–65535 on commit. `id` regenerates a random per-badge MQTT client ID so two
-badges don't fight over one session. **The MQTT client itself is not wired up
-yet** — `status` always reads offline.
+1–65535 on commit. Tapping the pairing secret rotates it. Connection attempts
+run in a FreeRTOS worker so a missing broker does not freeze touch or drawing.
 
 ### SYSTEM
 
@@ -709,10 +718,19 @@ display.
 
 ---
 
-## Not wired up yet
+## Production station
 
-- **MQTT.** The IoT menu stores broker/port/user/topic and generates a client
-  ID, but nothing connects. `status` always reads offline.
-- **Slideshow assets.** Currently procedural test patterns. There is ~2.9 MB of
-  app partition waiting for real images.
-- **MQTT password.** No field for it yet.
+The CLI remains the automation backend. The Pygame station wraps that same
+code, so its build checks, complete partition flash, MAC ledger, and concurrent
+workers behave identically:
+
+```sh
+python3 -m pip install -r ../../tools/requirements.txt
+python3 ../../tools/flash_gui.py
+```
+
+**ARM LIVE BAY** ignores devices already attached and flashes each badge after
+it is plugged in. **FLASH CONNECTED** handles the current ports once. Credits
+are available in the station and by holding the badge home screen for 3 seconds.
+
+See `../../TESTING.md` for the production and OTA sign-off matrix.

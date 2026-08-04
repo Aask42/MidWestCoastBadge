@@ -60,10 +60,10 @@ void powerTick(uint32_t now) {
 
 // A small outlined cell with a nub, filled proportionally. Drawn bottom-right
 // so it sits clear of the mode captions along the bottom centre.
-void drawBatteryIcon(Arduino_GFX *g, int ox, int oy) {
+void drawBatteryIcon(Arduino_GFX *g, int ox, int oy, bool top) {
   const int w = 26, h = 12;
   const int x = ox + SCREEN_W - w - 6;
-  const int y = oy + SCREEN_H - h - 6;
+  const int y = top ? oy + 10 : oy + SCREEN_H - h - 6;
   const int pct = batteryPercent();
 
   // Backing box, so the icon stays legible over a busy lenticular frame.

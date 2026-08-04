@@ -1,0 +1,9 @@
+# Must define the same partitions as ../badge/partitions.csv. The production
+# flasher parses and compares both build outputs before opening a serial port.
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+factory,    app,  factory,  0x10000,  0x110000,
+main,       app,  ota_0,    0x120000, 0x210000,
+storage,    data, littlefs, 0x330000, 0xC0000,
+coredump,   data, coredump, 0x3F0000, 0x10000,

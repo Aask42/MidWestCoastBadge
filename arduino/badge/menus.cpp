@@ -3,6 +3,7 @@
 #include "menus.h"
 
 #include "display.h"
+#include "authcmd.h"
 #include "identity.h"
 #include "input.h"
 #include "keyboard.h"
@@ -52,6 +53,9 @@ void refreshModeLabels() {
   for (int i = 0; i < MODE_ROWS_MAX; i++) modeItemPtrs[i] = modeLabel[i];
   snprintf(modeLabel[MODE_NAMETAG], sizeof(modeLabel[0]), "nametag");
   snprintf(modeLabel[MODE_SLIDESHOW], sizeof(modeLabel[0]), "slideshow (all)");
+  snprintf(modeLabel[MODE_WIFI_SCAN], sizeof(modeLabel[0]), "wifi scanner");
+  snprintf(modeLabel[MODE_BLE_SCAN], sizeof(modeLabel[0]), "badge scanner");
+  snprintf(modeLabel[MODE_GAME_2048], sizeof(modeLabel[0]), "2048");
   const int shows = SHOW_COUNT;
   for (int i = 0; i < shows; i++) {
     snprintf(modeLabel[MODE_SCENE_FIRST + i], sizeof(modeLabel[0]), "%s",
@@ -63,7 +67,8 @@ void refreshModeLabels() {
   }
 }
 static char setLabel[SET_ROWS][40];
-static const char *settingsItems[SET_ROWS] = {setLabel[0]};
+static const char *settingsItems[SET_ROWS] = {setLabel[0], setLabel[1],
+                                              setLabel[2], setLabel[3]};
 
 Menu menus[] = {
     {"MQTT", iotItems, IOT_ROWS, G_DOWN, 0, 0},       // bottom edge, push down
@@ -111,6 +116,11 @@ void refreshModeLabels();
 
 void refreshSetLabels() {
   snprintf(setLabel[SET_NAME], sizeof(setLabel[0]), "set name");
+  snprintf(setLabel[SET_SCAN_SHARE], sizeof(setLabel[0]), "[%c] MQTT scan upload",
+           shareWifiScans ? 'x' : ' ');
+  snprintf(setLabel[SET_MQTT], sizeof(setLabel[0]), "MQTT settings");
+  snprintf(setLabel[SET_POPUP], sizeof(setLabel[0]), "popup: %s",
+           popupText[0] ? popupText : "(none)");
 }
 
 void refreshSysLabels() {
@@ -150,19 +160,19 @@ void refreshSysLabels() {
 
 // === Rendering ===
 
-// The nav bar names the exact swipe that leaves this menu, so the way out is
-// never a guess.
+// The nav bar names the exact swipe that goes back, so the way out is never a
+// guess and it is not confused with cancelling an edit.
 void drawNavBar(Arduino_GFX *g, const Menu &m, int ox, int oy) {
   g->fillRect(ox, oy + NAV_Y, SCREEN_W, NAV_H, C_NAV);
 
-  char label[24];
-  snprintf(label, sizeof(label), "%s SWIPE %s", gestureArrow(m.retreat),
-           gestureWord(m.retreat));
-
+  // Arrow + bold label so the exit is unmistakable without knowing app idioms.
   g->setTextSize(2);
   g->setTextColor(C_NAV_FG);
-  g->setCursor(ox + 8, oy + NAV_Y + (NAV_H - GLYPH_H * 2) / 2);
-  g->print(label);
+  g->setCursor(ox + 4, oy + NAV_Y + 3);
+  g->print("< BACK");
+  g->setTextSize(1);
+  g->setCursor(ox + 4, oy + NAV_Y + 22);
+  g->printf("tap here or swipe %s", gestureWord(m.retreat));
 
   char count[16];
   const uint8_t pages = (m.count + MENU_VISIBLE - 1) / MENU_VISIBLE;
@@ -177,6 +187,10 @@ void drawNavBar(Arduino_GFX *g, const Menu &m, int ox, int oy) {
   g->setCursor(ox + SCREEN_W - textWidth(count, 1) - 8,
                oy + NAV_Y + (NAV_H - GLYPH_H) / 2);
   g->print(count);
+
+  // Flip button — small key to rotate the display 180°.
+  drawKey(g, ox + SCREEN_W - 46, oy + NAV_Y + 1, 38, NAV_H - 2,
+          "FLIP", C_BG, C_DIM, 1);
 }
 
 // One menu row, highlight included. Shared by the full redraw and the
@@ -296,6 +310,22 @@ void activateItem(int menuId, uint8_t row) {
         kbOpen(nametagName, sizeof(nametagName), "NAMETAG", false, nullptr);
         slideTo(SCREEN_KB, G_UP);
         return;
+      case SET_SCAN_SHARE:
+        shareWifiScans = !shareWifiScans;
+        refreshSetLabels();
+        saveSettings();
+        mqttPublishWifiScan();
+        render();
+        return;
+      case SET_MQTT:
+        navPush(menuId);
+        slideTo(MENU_IOT, G_UP);
+        return;
+      case SET_POPUP:
+        kbOpen(popupText, sizeof(popupText), "POPUP TEXT", false,
+               refreshSetLabels);
+        slideTo(SCREEN_KB, G_UP);
+        return;
     }
   }
 
@@ -324,6 +354,7 @@ void activateItem(int menuId, uint8_t row) {
         // mistake. Any pairing part-way through is invalidated, which is the
         // whole point, so this is deliberately a single deliberate tap.
         identityRegenerateCode();
+        authOwnerCodeChanged();
         refreshIotLabels();
         render();
         return;

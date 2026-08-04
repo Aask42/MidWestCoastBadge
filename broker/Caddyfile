@@ -1,0 +1,83 @@
+# Caddy front door for the Oracle deployment.
+#
+# Caddy owns every certificate in this stack. It obtains one ACME certificate
+# for DOMAIN and serves:
+#
+#   wss://DOMAIN/mqtt        browser MQTT, reverse-proxied to the private
+#                            Mosquitto WebSocket listener on the Docker network
+#
+# The web controller lives on GitHub Pages, not here. Caddy sets CORS headers
+# so the Pages origin can open WebSocket connections to the broker.
+#
+# The same certificate is copied into the Mosquitto container by the certsync
+# sidecar and used for native MQTT over TLS on 8883, so badges and browsers
+# get one publicly trusted identity and one renewal path. Mosquitto picks up a
+# renewal by restarting its broker process; see scripts/mosquitto-entrypoint.sh.
+#
+# Mosquitto itself is never published on 1883 or 9001.
+{
+	email {$ACME_EMAIL}
+
+	# Override to the Let's Encrypt staging directory while rehearsing, so a
+	# misconfigured DNS record does not burn the production rate limit.
+	acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+
+	# The admin API stays on the container loopback and is never published.
+	# It is what `caddy reload` and the container healthcheck talk to.
+	admin localhost:2019
+}
+
+{$DOMAIN} {
+	# Empty in production: Caddy manages certificates automatically over ACME.
+	# Set TLS_DIRECTIVE to "tls internal" to rehearse this exact file locally
+	# against Caddy's own CA, or to "tls <cert> <key>" to bring your own.
+	{$TLS_DIRECTIVE:}
+
+	log {
+		output stdout
+		format console
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# Browser MQTT. The web controller on GitHub Pages connects cross-origin
+	# to wss://DOMAIN/mqtt. Caddy handles the Upgrade handshake for
+	# reverse_proxy automatically; the CORS headers let the browser allow it.
+	@mqtt path /mqtt /mqtt/*
+	handle @mqtt {
+		header Access-Control-Allow-Origin "{$PAGES_ORIGIN:*}"
+		header Access-Control-Allow-Headers "content-type"
+		reverse_proxy mosquitto:9001 {
+			# Badges and browsers hold connections open for hours; MQTT
+			# keepalive, not a proxy timeout, decides when one is dead.
+			transport http {
+				read_timeout 0
+				write_timeout 0
+			}
+		}
+	}
+
+	# Unauthenticated liveness probe. Deliberately says nothing about the
+	# broker's state - scripts/healthcheck.sh is what actually inspects it.
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# No static files - the web controller is on GitHub Pages.
+	handle {
+		respond "see GitHub Pages" 404
+	}
+
+	# A Content-Security-Policy is intentionally NOT set here. web/index.html
+	# currently loads mqtt.js from unpkg and fonts from Google, so a strict
+	# policy would break the controller. If web/ is ever vendored locally,
+	# this is the policy to turn on:
+	#
+	# header Content-Security-Policy "default-src 'self'; connect-src 'self' wss://{$DOMAIN}; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+}

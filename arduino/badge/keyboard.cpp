@@ -66,12 +66,14 @@ int kbTop() { return KB_TOP + (KB_ROW_COUNT - kbRowCount()) * KB_KEY_H; }
 // Caret row: LEFT | RIGHT | CLR, three equal keys.
 #define KB_EDIT_KEY_W (SCREEN_W / 3)
 
-// Action row: DEL | case | page | SPACE | OK, widths summing to SCREEN_W.
-#define KB_DEL_W 44
-#define KB_CASE_W 40
-#define KB_PAGE_W 40
-#define KB_OK_W 44
-#define KB_SPACE_W (SCREEN_W - KB_DEL_W - KB_CASE_W - KB_PAGE_W - KB_OK_W)
+// Action row: CANCEL | DEL | case | page | SPACE | OK.
+#define KB_CANCEL_W 48
+#define KB_DEL_W 38
+#define KB_CASE_W 32
+#define KB_PAGE_W 32
+#define KB_OK_W 40
+#define KB_SPACE_W \
+  (SCREEN_W - KB_CANCEL_W - KB_DEL_W - KB_CASE_W - KB_PAGE_W - KB_OK_W)
 
 // === On-screen keyboard ===
 // Ten keys per row at 24px is about as small as a fingertip can reliably hit
@@ -148,7 +150,7 @@ void drawKbEntry(Arduino_GFX *g, int ox, int oy) {
   // Name both swipe bindings. "Any swipe cancels" is no longer true, and an
   // undiscoverable delete gesture is no better than not having one.
   char hint[24];
-  snprintf(hint, sizeof(hint), "%s del  %s back", gestureArrow(G_LEFT),
+  snprintf(hint, sizeof(hint), "%s del  %s cancel", gestureArrow(G_LEFT),
            gestureArrow(G_DOWN));
   g->setCursor(ox + 10, oy + KB_HINT_Y);
   g->print(hint);
@@ -190,10 +192,12 @@ void drawKeyboard(Arduino_GFX *g, int ox, int oy) {
     }
   }
 
-  // Action row: DEL | case | page | SPACE | OK. The case key shows the case
+  // Action row: CANCEL | DEL | case | page | SPACE | OK. The case key shows the case
   // you are about to type, so it reads as state rather than as a command.
   const int ay = oy + KB_ACTION_Y;
   int x = ox;
+  drawKey(g, x, ay, KB_CANCEL_W, KB_ACTION_H, "CANCEL", C_NAV, C_NAV_FG, 1);
+  x += KB_CANCEL_W;
   drawKey(g, x, ay, KB_DEL_W, KB_ACTION_H, "DEL", C_BG, C_NAV, 1);
   x += KB_DEL_W;
   if (editNumeric) {
@@ -325,7 +329,8 @@ KbResult handleKeyboardTap(int x, int y) {
 
   // Action row, which runs to the bottom edge of the panel.
   if (y >= KB_ACTION_Y) {
-    if (x < KB_DEL_W) {
+    if (x < KB_CANCEL_W) return KB_CANCEL;
+    if (x < KB_CANCEL_W + KB_DEL_W) {
       if (editPos == 0) return KB_IGNORED;
       kbBackspace();
       return KB_ENTRY;
@@ -335,12 +340,12 @@ KbResult handleKeyboardTap(int x, int y) {
       return KB_DONE;
     }
     if (editNumeric) return KB_IGNORED;  // inert filler where the rest would be
-    if (x < KB_DEL_W + KB_CASE_W) {
+    if (x < KB_CANCEL_W + KB_DEL_W + KB_CASE_W) {
       if (kbSymbols) return KB_IGNORED;  // punctuation has no case
       kbCase = (KbCase)((kbCase + 1) % 3);
       return KB_REDRAW;  // every letter key changes case
     }
-    if (x < KB_DEL_W + KB_CASE_W + KB_PAGE_W) {
+    if (x < KB_CANCEL_W + KB_DEL_W + KB_CASE_W + KB_PAGE_W) {
       kbSymbols = !kbSymbols;
       return KB_REDRAW;  // the whole grid is replaced
     }

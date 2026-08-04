@@ -18,6 +18,13 @@ tools/venv/
 __pycache__/
 *.pyc
 
+# Local broker runtime and generated credentials
+broker/.env
+broker/config/passwd
+broker/data/
+broker/log/
+broker/certs/
+
 # Resilio Sync placeholders
 *.rsls
 *.rslsc

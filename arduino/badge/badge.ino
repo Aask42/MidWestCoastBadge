@@ -1,8 +1,9 @@
 // badge.ino - DEF CON 34 badge firmware: entry point and wiring only.
 //
-// usage: arduino-cli compile -u -p <port>
-//          --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc
-//          --build-property upload.maximum_size=4063232 badge
+// production flash: python3 tools/mass_flash.py --once
+// main-only compile: arduino-cli compile
+//   --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,FlashSize=4M
+//   --build-property upload.maximum_size=2162688 arduino/badge
 //
 // See README.md for the build flags, flash layout, gesture map and module
 // tour, and docs/PAIRING.md for the badge-identity and web-client design.
@@ -31,6 +32,7 @@
 //               up by typing a passphrase on a 240px keyboard.
 
 #include "authcmd.h"
+#include "ble.h"
 #include "config.h"
 #include "console.h"
 #include "display.h"
@@ -41,6 +43,7 @@
 #include "modes.h"
 #include "mqtt.h"
 #include "net.h"
+#include "ota.h"
 #include "power.h"
 #include "store.h"
 #include "types.h"
@@ -64,17 +67,19 @@ void setup() {
   // Identity before settings: the MQTT menu labels render the pairing code,
   // and loadSettings() builds those labels.
   imagesBegin();  // before loadSettings: the SHOW menu counts them
-  authBegin();
   identityBegin();
+  authBegin();  // owner key derivation depends on identity and runs async
   loadSettings();
   displayApplyBrightness();  // only meaningful once the stored level is known
 
+  bleBegin();
   netBegin();
   mqttBegin();
   powerBegin();
 
   lastActivity = millis();
   render();
+  otaConfirmBoot();
 }
 
 void loop() {
@@ -97,6 +102,7 @@ void loop() {
   touchDiag(now);
   storeTick(now);
   powerTick(now);
+  bleTick(now);
   consoleTick();
   mqttTick(now);
 

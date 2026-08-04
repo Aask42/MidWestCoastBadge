@@ -47,7 +47,7 @@
 
 // Bumped by hand. Shown on the splash so a badge in someone else's hands can
 // be identified without opening a serial console.
-#define BADGE_VERSION "0.6.1"
+#define BADGE_VERSION "0.7.0"
 
 // === Palette (RGB565) ===
 #define C_BG 0x1082      // near-black
@@ -85,7 +85,7 @@ static const int MAX_JUMP = 60;
 // point - it is the only way to the credits screen.
 static const uint32_t HOLD_MS = 3000;
 
-#define ANIM_STEPS 3  // frames per screen transition
+#define ANIM_STEPS 6  // frames per screen transition
 
 // === Timing ===
 static const uint32_t SPLASH_MS = 3000;
@@ -98,6 +98,7 @@ static const uint32_t SPLASH_MS = 3000;
 // leaving it up.
 static const uint32_t MODE_IDLE_MS = 5000;
 static const uint32_t MENU_IDLE_MS = 15000;
+static const uint32_t EDIT_IDLE_MS = 60000;
 static const uint32_t SLIDE_MS = 2500;         // slideshow dwell per image
 static const uint32_t SAVE_DEBOUNCE_MS = 1500; // NVS write debounce
 static const uint32_t WIFI_POLL_MS = 1000;
@@ -154,7 +155,13 @@ static const uint32_t LENT_FRAME_MS = 40;      // ~20fps, bounded by redraw cost
 // find, which is what made the old split confusing.
 #define MODE_NAMETAG 0
 #define MODE_SLIDESHOW 1
-#define MODE_SCENE_FIRST 2  // rows 2..2+SHOW_COUNT-1 are individual shows
+#define MODE_WIFI_SCAN 2
+#define MODE_BLE_SCAN 3
+#define MODE_GAME_2048 4
+#define MODE_SCENE_FIRST 5  // rows 5..5+SHOW_COUNT-1 are individual shows
+
+#define WIFI_SCAN_MAX 12
+static const uint32_t WIFI_SCAN_REFRESH_MS = 15000;
 
 #define DEFAULT_NAME "YOUR NAME"
 
