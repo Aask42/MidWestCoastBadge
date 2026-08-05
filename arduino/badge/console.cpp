@@ -60,9 +60,9 @@ static void handle(char *s) {
   } else if (!strcmp(tok[0], "wifi") && n >= 2) {
     setField(wifiSsid, sizeof(wifiSsid), tok[1]);
     setField(wifiPass, sizeof(wifiPass), n >= 3 ? tok[2] : "");
-    saveSettings();
-    refreshSysLabels();
     wifiConnect();
+    saveSettings();  // after connect so wifiOn persists
+    refreshSysLabels();
     Serial.printf("wifi: set to '%s', joining\n", wifiSsid);
   } else if (!strcmp(tok[0], "mqtt") && n >= 3) {
     setField(iotBroker, sizeof(iotBroker), tok[1]);

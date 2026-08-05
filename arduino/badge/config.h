@@ -47,7 +47,7 @@
 
 // Bumped by hand. Shown on the splash so a badge in someone else's hands can
 // be identified without opening a serial console.
-#define BADGE_VERSION "0.7.0"
+#define BADGE_VERSION "0.7.2"
 
 // === Palette (RGB565) ===
 #define C_BG 0x1082      // near-black
@@ -81,9 +81,19 @@ static const int MAX_JUMP = 60;
 #define EDGE_ZONE 80
 
 // How long a finger has to sit still before the stroke becomes a hold. Long
-// enough that nobody finds it by accident during an ordinary tap, which is the
-// point - it is the only way to the credits screen.
+// enough that nobody finds it by accident during an ordinary tap. On nametag /
+// slideshow this locks the screen; elsewhere in a mode it is ignored; on the
+// idle home card it opens the credits screen.
 static const uint32_t HOLD_MS = 3000;
+
+// Shorter still-hold arms nametag pin/unpin (G_LONG_ARM flash, G_LONG on lift).
+// Single shows ignore it; slideshow only uses it to unlock a locked screen.
+// Must stay well below HOLD_MS so the two gestures do not race.
+static const uint32_t LONG_PRESS_MS = 550;
+
+// Debounce finger-up blips from the CST816 mid-hold; without this every hold
+// collapses into a tap before LONG_PRESS_MS / HOLD_MS can land.
+static const uint32_t TOUCH_LIFT_MS = 120;
 
 #define ANIM_STEPS 6  // frames per screen transition
 

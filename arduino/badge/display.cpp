@@ -112,6 +112,11 @@ void drawScreen(Arduino_GFX *g, int id, int ox, int oy) {
     drawBanner(g, ox, oy);
     return;
   }
+  // Local screen lock/unlock glyph — brief, full-screen, then gone.
+  if (screenLockGlyphActive()) {
+    drawScreenLockGlyph(g, ox, oy);
+    return;
+  }
   if (id == SCREEN_KB) {
     drawKeyboard(g, ox, oy);
   } else if (id == SCREEN_CREDITS) {
@@ -133,7 +138,12 @@ void drawScreen(Arduino_GFX *g, int id, int ox, int oy) {
   // and the gauge would sit on top of it.
   const bool scanner = id == SCREEN_HOME && modeActive &&
                        activeMode() == MODE_WIFI_SCAN;
-  if (showBatteryIcon && !scanner) drawBatteryIcon(g, ox, oy);
+  if (showBatteryIcon && !scanner) {
+    drawBatteryIcon(g, ox, oy);
+    drawPowerUsage(g, ox, oy);
+  }
+  // After battery so the pin glyph sits just left of it without being covered.
+  if (bgPinGlyphActive()) drawBgPinGlyph(g, ox, oy);
 }
 
 // Composites up to two screens at the given offsets and pushes the result to
@@ -168,6 +178,15 @@ void present(int outId, int outDx, int outDy, int inId, int inDx, int inDy) {
 }
 
 void render() { present(current, 0, 0, current, 0, 0); }
+
+void flashConfirm() {
+  // Direct to the panel — bypasses the strip compositor so the flash is one
+  // SPI burst and lands immediately under the finger that triggered it.
+  panel->fillScreen(C_FG);
+  delay(70);
+  panel->fillScreen(C_BG);
+  delay(40);
+}
 
 // A selection change updates two small rectangles plus the nav counter,
 

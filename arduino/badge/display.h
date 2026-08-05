@@ -58,6 +58,9 @@ void present(int outId, int outDx, int outDy, int inId, int inDx, int inDy);
 // Repaints the current screen in place.
 void render();
 
+// Brief white flash — confirms deliberate mode actions (nametag pin / unpin).
+void flashConfirm();
+
 // Slides from the current screen to `next` in the direction of the gesture,
 // then makes `next` current. The incoming screen enters from the edge the
 // swipe came from.

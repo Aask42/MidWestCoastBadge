@@ -27,10 +27,26 @@ void bannerShow(const char *text, uint32_t seconds);
 bool bannerActive();
 void drawBanner(Arduino_GFX *g, int ox, int oy);
 
+// Full-screen padlock glyph after locking / unlocking the screen (3s).
+// `unlocked` true draws the open shackle; false draws the closed lock.
+void screenLockGlyphShow(bool unlocked);
+bool screenLockGlyphActive();
+void drawScreenLockGlyph(Arduino_GFX *g, int ox, int oy);
+
+// Brief corner lock/unlock after pinning / unpinning a nametag background.
+// Drawn bottom-right, just left of the battery gauge.
+void bgPinGlyphShow(bool locked);
+bool bgPinGlyphActive();
+void drawBgPinGlyph(Arduino_GFX *g, int ox, int oy);
+
+// While true, taps/swipes/holds in a running mode are ignored except the
+// ~550ms long-press arm, which unlocks. Set by a 3s still-hold in a mode.
+bool screenIsLocked();
+
 void drawHome(Arduino_GFX *g, int ox, int oy);
 
-// The hidden credits screen, reached only by holding a finger on home or on a
-// running mode for HOLD_MS. Not on any menu, and not hinted at anywhere.
+// The hidden credits screen, reached only by holding a finger on the idle
+// home card for HOLD_MS. Not on any menu, and not hinted at anywhere.
 void drawCredits(Arduino_GFX *g, int ox, int oy);
 
 void handleGesture(Gesture g);
