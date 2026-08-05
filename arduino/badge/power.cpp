@@ -7,6 +7,7 @@
 #include "config.h"
 #include "display.h"
 #include "store.h"
+#include "ui.h"
 
 static uint16_t battMv = 0;
 static uint32_t lastSample = 0;
@@ -89,4 +90,34 @@ void drawBatteryIcon(Arduino_GFX *g, int ox, int oy, bool top) {
     g->setCursor(x - textWidth("--", 1) - 4, y + 2);
     g->print("--");
   }
+}
+
+// Rough steady-state draw for this badge. Numbers are order-of-magnitude for
+// an ESP32-C3 + ST7789 pack — good for comparing settings, not for billing.
+static int estimatedMilliamps() {
+  int ma = 30;  // MCU + panel logic, radio off
+  ma += (BRIGHT_PCT[brightness] * 75) / 100;  // backlight dominates
+  if (wifiWanted) ma += 50;                   // STA on (idle or joining)
+  if (modeActive) ma += 12;                   // continuous full-frame SPI
+  return ma;
+}
+
+void drawPowerUsage(Arduino_GFX *g, int ox, int oy) {
+  const int ma = estimatedMilliamps();
+  char txt[10];
+  snprintf(txt, sizeof(txt), "~%dmA", ma);
+
+  const int tw = textWidth(txt, 1);
+  const int x = ox + 6;
+  const int y = oy + SCREEN_H - 12 - 6;
+
+  g->fillRect(x - 2, y - 2, tw + 4, 14, C_BG);
+  g->setTextSize(1);
+  uint16_t col = C_OK;
+  if (ma >= 120) col = C_WARN;
+  else if (ma >= 80) col = C_NAV;
+  else if (ma < 60) col = C_DIM;
+  g->setTextColor(col);
+  g->setCursor(x, y + 2);
+  g->print(txt);
 }

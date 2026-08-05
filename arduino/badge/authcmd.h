@@ -30,7 +30,8 @@ bool authVerify(const char *payload, size_t len, const char **body,
 
 // Owner commands use the code printed on the badge rather than the fleet
 // operator key. They are accepted only on the per-badge /owner topic and are
-// restricted by mqtt.cpp to name, show, and popup operations.
+// restricted by mqtt.cpp to name, show, and banner (never OTA). Fleet-lock
+// still drops name/show; banners remain allowed.
 //
 //     o1\n<seq>\n<base64 HMAC-SHA256>\n<command json>
 //

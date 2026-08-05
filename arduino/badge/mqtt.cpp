@@ -103,8 +103,10 @@ void mqttPublishState() {
   // own screen precisely so it never has to travel over the wire.
   char payload[256];
   snprintf(payload, sizeof(payload),
-           "{\"id\":\"%s\",\"name\":\"%s\",\"show\":\"%s\",\"v\":\"%s\"}",
-           badgeId, nametagName, modeItems[activeMode()], BADGE_VERSION);
+           "{\"id\":\"%s\",\"name\":\"%s\",\"show\":\"%s\",\"v\":\"%s\","
+           "\"fleet\":%s}",
+           badgeId, nametagName, modeItems[activeMode()], BADGE_VERSION,
+           acceptFleetPushes ? "true" : "false");
 
   // Retained: a client that connects later still learns this badge exists
   // without having to wait for the next change.
@@ -227,8 +229,9 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
     LOGF("mqtt: rx %s -> %s (%s auth ok)\n", topic, buf,
       ownerAuth ? "owner" : "operator");
 
-  // banner: {"msg":"TEXT","secs":30} - the one command that is useful to send
-  // to every badge at once.
+  // banner: {"msg":"TEXT","secs":30} - always allowed once authenticated.
+  // Fleet-lock still accepts banners from both operator and owner; rename /
+  // show / OTA are gated below.
   const char *bp = strstr(buf, "\"msg\"");
   if (bp) {
     const char *q = strchr(bp + 5, '"');
@@ -251,6 +254,14 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
         bannerShow(text, secs);
       }
     }
+    return;
+  }
+
+  // Non-banner remote control is opt-in. Locked = no rename / setShow / OTA
+  // from fleet or owner; USB flash is then the only way to update firmware.
+  if (!acceptFleetPushes) {
+    LOGF("mqtt: DROPPED non-banner %s command (fleet locked)\n",
+         ownerAuth ? "owner" : "fleet");
     return;
   }
 

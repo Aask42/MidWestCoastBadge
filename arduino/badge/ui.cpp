@@ -10,7 +10,9 @@
 #include "modes.h"
 #include "ble.h"
 #include "net.h"
+#include "mqtt.h"
 #include "store.h"
+#include "lock_icons.h"
 
 int current = SCREEN_HOME;
 bool splashActive = true;
@@ -25,6 +27,14 @@ static float homePhase = 0.0f;
 static char bannerText[96] = "";
 static uint32_t bannerUntil = 0;
 
+static uint32_t lockGlyphUntil = 0;
+static bool lockGlyphUnlocked = true;
+// Mode screen lock: taps/swipes ignored until long-press arm unlocks.
+static bool screenLocked = false;
+// After unlocking mid-hold, ignore the rest of that stroke (G_HOLD / G_LONG)
+// so the same press cannot immediately re-lock or pin.
+static bool unlockStrokeSuppress = false;
+
 bool bannerActive() { return bannerUntil && millis() < bannerUntil; }
 
 void bannerShow(const char *text, uint32_t seconds) {
@@ -32,6 +42,77 @@ void bannerShow(const char *text, uint32_t seconds) {
   bannerUntil = millis() + seconds * 1000UL;
   LOGF("banner: '%s' for %lus\n", bannerText, (unsigned long)seconds);
   render();
+}
+
+bool screenIsLocked() { return screenLocked; }
+
+bool screenLockGlyphActive() {
+  return lockGlyphUntil && millis() < lockGlyphUntil;
+}
+
+void screenLockGlyphShow(bool unlocked) {
+  lockGlyphUnlocked = unlocked;
+  lockGlyphUntil = millis() + 3000UL;
+  LOGF("screen lock glyph: %s\n", unlocked ? "unlocked" : "locked");
+  render();
+}
+
+static uint32_t bgPinGlyphUntil = 0;
+static bool bgPinGlyphLocked = true;
+
+bool bgPinGlyphActive() {
+  return bgPinGlyphUntil && millis() < bgPinGlyphUntil;
+}
+
+void bgPinGlyphShow(bool locked) {
+  bgPinGlyphLocked = locked;
+  bgPinGlyphUntil = millis() + 1200UL;
+  LOGF("bg pin glyph: %s\n", locked ? "locked" : "unlocked");
+  render();
+}
+
+// Blit a 1bpp PROGMEM silhouette (from lock_icons.h / the reference artwork).
+// Scales with nearest-neighbour so the full-screen glyph and the corner pin
+// glyph share one asset.
+static void blitLockIcon(Arduino_GFX *g, int dx, int dy, int dw, int dh,
+                         const uint8_t *data, int sw, int sh, uint16_t col) {
+  if (dw <= 0 || dh <= 0) return;
+  const int rb = (sw + 7) / 8;
+  for (int y = 0; y < dh; y++) {
+    const int sy = (y * sh) / dh;
+    const int row = sy * rb;
+    for (int x = 0; x < dw; x++) {
+      const int sx = (x * sw) / dw;
+      const uint8_t b = pgm_read_byte(&data[row + (sx >> 3)]);
+      if (b & (0x80 >> (sx & 7))) g->drawPixel(dx + x, dy + y, col);
+    }
+  }
+}
+
+static void drawLockArtwork(Arduino_GFX *g, int cx, int top, int height,
+                            bool unlocked, uint16_t col) {
+  const uint8_t *data = unlocked ? LOCK_OPEN_ICON : LOCK_ICON;
+  const int sw = unlocked ? LOCK_OPEN_ICON_W : LOCK_ICON_W;
+  const int sh = unlocked ? LOCK_OPEN_ICON_H : LOCK_ICON_H;
+  const int dw = (sw * height) / sh;
+  blitLockIcon(g, cx - dw / 2, top, dw, height, data, sw, sh, col);
+}
+
+// Tiny corner padlock — left of the battery, after pin / unpin.
+void drawBgPinGlyph(Arduino_GFX *g, int ox, int oy) {
+  const int battX = ox + SCREEN_W - 26 - 6;
+  const bool unlocked = !bgPinGlyphLocked;
+  const int sw = unlocked ? LOCK_OPEN_ICON_W : LOCK_ICON_W;
+  const int sh = unlocked ? LOCK_OPEN_ICON_H : LOCK_ICON_H;
+  const int dh = 18;
+  const int dw = (sw * dh) / sh;
+  const int x = battX - 4 - dw;
+  const int y = oy + SCREEN_H - dh - 6;
+  const uint16_t col = bgPinGlyphLocked ? C_ACCENT : C_OK;
+
+  g->fillRect(x - 2, y - 2, dw + 4, dh + 4, C_BG);
+  blitLockIcon(g, x, y, dw, dh,
+               unlocked ? LOCK_OPEN_ICON : LOCK_ICON, sw, sh, col);
 }
 
 // Word-wrapped and scaled to fill, because a message nobody can read across a
@@ -72,6 +153,20 @@ void drawBanner(Arduino_GFX *g, int ox, int oy) {
     }
     return;
   }
+}
+
+// Full-screen lock / unlock using the reference artwork silhouettes.
+void drawScreenLockGlyph(Arduino_GFX *g, int ox, int oy) {
+  g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_BG);
+  g->drawRect(ox + 10, oy + 10, SCREEN_W - 20, SCREEN_H - 20, C_DIM);
+
+  const uint16_t col = lockGlyphUnlocked ? C_OK : C_ACCENT;
+  const int height = 140;
+  drawLockArtwork(g, ox + SCREEN_W / 2, oy + (SCREEN_H - height) / 2 - 12,
+                  height, lockGlyphUnlocked, col);
+
+  printCentered(g, lockGlyphUnlocked ? "UNLOCKED" : "LOCKED", ox,
+                oy + SCREEN_H - 48, 1, C_DIM);
 }
 
 // QR code for https://midwestcoast.best/badge — 25x25 modules, packed 1bpp.
@@ -267,13 +362,49 @@ void handleGesture(Gesture g) {
     return;
   }
 
-  // A hold anywhere that is not a menu or the keyboard opens the credits. Menus
-  // are excluded because a finger resting on a row while someone reads the list
-  // is ordinary behaviour there, and the keyboard because it is mid-edit.
+  // Screen lock owns the mode: only the ~550ms long-press arm unlocks. No
+  // secondary 3s hold, and taps / swipes / pin actions do nothing.
+  if (modeActive && screenLocked) {
+    if (g == G_LONG_ARM) {
+      screenLocked = false;
+      unlockStrokeSuppress = true;
+      flashConfirm();
+      screenLockGlyphShow(true);
+      LOGF("long arm -> screen unlocked\n");
+      return;
+    }
+    LOGF("screen locked; ignoring %s\n", gestureWord(g));
+    return;
+  }
+
+  // Rest of the unlock stroke: G_HOLD or G_LONG must not re-lock / pin.
+  if (unlockStrokeSuppress) {
+    if (g == G_HOLD || g == G_LONG || g == G_LONG_ARM) {
+      LOGF("post-unlock stroke: ignoring %s\n", gestureWord(g));
+      unlockStrokeSuppress = false;
+      return;
+    }
+    unlockStrokeSuppress = false;
+  }
+
+  // A hold on the idle home card opens credits. While nametag or slideshow is
+  // running, a 3s still-hold locks the screen (tap / swipe inert until
+  // long-press unlock). Other modes have no hold actions. Holding this long
+  // also cancels a pending nametag pin.
   if (g == G_HOLD) {
+    if (modeActive) {
+      const uint8_t mode = activeMode();
+      if (mode != MODE_NAMETAG && mode != MODE_SLIDESHOW) {
+        LOGF("hold ignored in mode %s\n", modeItems[mode]);
+        return;
+      }
+      screenLocked = true;
+      screenLockGlyphShow(false);
+      LOGF("hold -> screen locked\n");
+      return;
+    }
     if (current == SCREEN_HOME) {
       splashActive = false;
-      modeActive = false;
       navClear();
       LOGF("hold -> credits\n");
       slideTo(SCREEN_CREDITS, G_UP);
@@ -282,6 +413,34 @@ void handleGesture(Gesture g) {
     }
     return;
   }
+
+  // ~550ms still-hold: flash on nametag so pin/unpin arm is obvious. Apply
+  // waits for lift (G_LONG) and is cancelled if the press continues to G_HOLD.
+  // Slideshow only uses long-press to unlock once already screen-locked.
+  if (modeActive && g == G_LONG_ARM) {
+    if (activeMode() == MODE_NAMETAG) flashConfirm();
+    return;
+  }
+  if (g == G_LONG_ARM) return;
+
+  // Lift after arm, before HOLD: nametag pin/unpin only. Single shows and
+  // slideshow do not take short long-press actions.
+  if (modeActive && g == G_LONG) {
+    if (activeMode() == MODE_NAMETAG) {
+      if (modesPinCurrentAsNametag()) {
+        modesEnter(millis());
+        bgPinGlyphShow(true);
+        return;
+      }
+      if (modesUnpinNametag()) {
+        bgPinGlyphShow(false);
+        return;
+      }
+    }
+    LOGF("long press ignored in mode %s\n", modeItems[activeMode()]);
+    return;
+  }
+  if (g == G_LONG) return;  // only meaningful while a mode is running
 
   // Any touch wakes the badge out of a running mode. A tap just dismisses it
   // to home. A swipe, though, carries intent - it was aimed at an edge - so
@@ -296,6 +455,7 @@ void handleGesture(Gesture g) {
     }
     modesExit();
     modeActive = false;
+    screenLocked = false;
     current = SCREEN_HOME;
     navClear();  // running a mode ends the history; back from home is nowhere
     LOGF("mode exit (%s)\n", g == G_TAP ? "tap -> home" : "swipe, continuing");
@@ -505,15 +665,27 @@ void uiTick(uint32_t now) {
     render();
   }
 
-  // A banner expiring puts the badge back to whatever it was doing.
+  // A banner / screen-lock glyph expiring puts the badge back to whatever it
+  // was doing. The corner bg-pin glyph is drawn on top of the live mode, so
+  // expiry only needs a refresh when it disappears.
   static bool bannerWas = false;
+  static bool lockGlyphWas = false;
+  static bool bgPinWas = false;
   const bool bannerNow = bannerActive();
-  if (bannerWas && !bannerNow) {
-    LOGF("banner expired\n");
+  const bool lockGlyphNow = screenLockGlyphActive();
+  const bool bgPinNow = bgPinGlyphActive();
+  if ((bannerWas && !bannerNow) || (lockGlyphWas && !lockGlyphNow) ||
+      (bgPinWas && !bgPinNow)) {
+    LOGF("%s expired\n",
+         bannerWas && !bannerNow
+             ? "banner"
+             : (lockGlyphWas && !lockGlyphNow ? "lock glyph" : "bg pin glyph"));
     render();
   }
   bannerWas = bannerNow;
-  if (bannerNow) return;  // nothing else runs while a banner is up
+  lockGlyphWas = lockGlyphNow;
+  bgPinWas = bgPinNow;
+  if (bannerNow || lockGlyphNow) return;  // overlay owns the screen
 
   // Splash gives way to the home summary card.
   if (splashActive && now - splashStart >= SPLASH_MS) {
