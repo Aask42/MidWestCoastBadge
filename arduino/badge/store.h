@@ -23,6 +23,19 @@
 // === Nametag ===
 extern char nametagName[24];
 
+// Name colour mode. 0 = rainbow (animated per letter); the rest are solids.
+// Tap cycles in SETTINGS — same pattern as brightness.
+#define NAME_COLOR_RAINBOW 0
+#define NAME_COLOR_COUNT 7
+extern uint8_t nametagColor;
+extern const char *const NAME_COLOR_NAMES[NAME_COLOR_COUNT];
+extern const uint16_t NAME_COLOR_RGB[NAME_COLOR_COUNT];
+
+// When true, nametag keeps nameBgShow as its background instead of rotating
+// procedural scenes. Set by long-pressing the unlocked nametag rotator.
+extern bool nameBgLocked;
+extern uint8_t nameBgShow;
+
 // === MQTT / IoT config ===
 extern char iotBroker[32];
 extern char iotPort[6];
@@ -49,6 +62,14 @@ extern bool showBatteryIcon;
 // them to the configured MQTT fleet topic.
 extern bool shareWifiScans;
 
+// Remote control gate. On by default so a fresh badge accepts OTA / rename /
+// setShow from the fleet. Toggle via SETTINGS → fleet pushes. When off,
+// authenticated banners still land (fleet and owner); rename / setShow / OTA
+// are dropped for both — USB flash is then the only firmware update path.
+// When on, fleet can do all four; owner can still rename / setShow / banner
+// but never OTA.
+extern bool acceptFleetPushes;
+
 // User-defined popup shown on demand from the settings menu.
 extern char popupText[48];
 
@@ -58,7 +79,9 @@ extern bool displayFlipped;
 // === WiFi credentials ===
 extern char wifiSsid[33];  // 32 chars max per 802.11
 extern char wifiPass[64];  // 63 chars max for WPA2
-extern bool wifiWanted;    // true once a connection has been asked for
+// Radio enable. Default false — credentials can be stored without joining.
+// SYSTEM → WiFi radio toggles this and persists it.
+extern bool wifiWanted;
 
 // Copies into a fixed buffer and always terminates. strncpy alone does not
 // terminate when the source fills the buffer, which is exactly the case a

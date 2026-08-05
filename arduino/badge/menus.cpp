@@ -67,8 +67,9 @@ void refreshModeLabels() {
   }
 }
 static char setLabel[SET_ROWS][40];
-static const char *settingsItems[SET_ROWS] = {setLabel[0], setLabel[1],
-                                              setLabel[2], setLabel[3]};
+static const char *settingsItems[SET_ROWS] = {
+    setLabel[0], setLabel[1], setLabel[2], setLabel[3],
+    setLabel[4], setLabel[5]};
 
 Menu menus[] = {
     {"MQTT", iotItems, IOT_ROWS, G_DOWN, 0, 0},       // bottom edge, push down
@@ -118,9 +119,13 @@ void refreshSetLabels() {
   snprintf(setLabel[SET_NAME], sizeof(setLabel[0]), "set name");
   snprintf(setLabel[SET_SCAN_SHARE], sizeof(setLabel[0]), "[%c] MQTT scan upload",
            shareWifiScans ? 'x' : ' ');
+  snprintf(setLabel[SET_FLEET], sizeof(setLabel[0]), "[%c] fleet pushes",
+           acceptFleetPushes ? 'x' : ' ');
   snprintf(setLabel[SET_MQTT], sizeof(setLabel[0]), "MQTT settings");
   snprintf(setLabel[SET_POPUP], sizeof(setLabel[0]), "popup: %s",
            popupText[0] ? popupText : "(none)");
+  snprintf(setLabel[SET_COLOR], sizeof(setLabel[0]), "name color: %s",
+           NAME_COLOR_NAMES[nametagColor % NAME_COLOR_COUNT]);
 }
 
 void refreshSysLabels() {
@@ -152,7 +157,7 @@ void refreshSysLabels() {
              wifiStateText());
   }
   snprintf(sysLabel[SYS_CONNECT], sizeof(sysLabel[0]), "%s",
-           wifiWanted ? "disconnect" : "connect");
+           wifiWanted ? "WiFi radio: on" : "WiFi radio: off");
   // The armed label says what the next tap DOES, not what the row is for.
   snprintf(sysLabel[SYS_RESET], sizeof(sysLabel[0]), "%s",
            resetArmed() ? "TAP AGAIN TO WIPE" : "factory reset");
@@ -317,6 +322,13 @@ void activateItem(int menuId, uint8_t row) {
         mqttPublishWifiScan();
         render();
         return;
+      case SET_FLEET:
+        acceptFleetPushes = !acceptFleetPushes;
+        refreshSetLabels();
+        saveSettings();
+        mqttPublishState();
+        render();
+        return;
       case SET_MQTT:
         navPush(menuId);
         slideTo(MENU_IOT, G_UP);
@@ -325,6 +337,12 @@ void activateItem(int menuId, uint8_t row) {
         kbOpen(popupText, sizeof(popupText), "POPUP TEXT", false,
                refreshSetLabels);
         slideTo(SCREEN_KB, G_UP);
+        return;
+      case SET_COLOR:
+        nametagColor = (uint8_t)((nametagColor + 1) % NAME_COLOR_COUNT);
+        refreshSetLabels();
+        saveSettings();
+        render();
         return;
     }
   }

@@ -5,7 +5,12 @@
 
 # === Build artifacts ===
 arduino/badge/build/
+build/
 .build/
+
+# Full-flash dumps (contain NVS: WiFi/MQTT secrets)
+backup-*.bin
+backups/
 
 # === Extracted vendor firmware images and strings ===
 # Large binaries, and not ours to redistribute from a public repo.

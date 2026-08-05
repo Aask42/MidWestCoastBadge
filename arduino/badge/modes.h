@@ -12,7 +12,7 @@
 #include "config.h"
 #include "types.h"
 
-#define SCENE_COUNT 5
+#define SCENE_COUNT 8
 
 // Lenticular bitmaps live on the `storage` LittleFS partition, NOT in the
 // firmware. Keeping them out of the app means an OTA never re-sends artwork
@@ -54,3 +54,10 @@ void modesExit();
 // Lets interactive modes consume gestures before the UI treats them as an
 // exit. The WiFi scanner uses vertical swipes to browse its result list.
 bool modesHandleGesture(Gesture gesture);
+
+// Long-press on unlocked nametag: pin the current background under the name.
+// Persists.
+bool modesPinCurrentAsNametag();
+
+// Long-press on a locked nametag: resume rotating procedural backgrounds.
+bool modesUnpinNametag();
