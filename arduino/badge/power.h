@@ -38,3 +38,7 @@ uint32_t uptimeSeconds();
 // Draws the corner badge. Caller decides whether it is wanted; see
 // showBatteryIcon in store.h.
 void drawBatteryIcon(Arduino_GFX *g, int ox, int oy, bool top = false);
+
+// Tiny bottom-left estimate of draw (backlight + WiFi + animation). Heuristic
+// only — this board has no current shunt. Shown with the battery gauge.
+void drawPowerUsage(Arduino_GFX *g, int ox, int oy);

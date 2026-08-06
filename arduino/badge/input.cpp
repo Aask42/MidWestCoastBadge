@@ -10,12 +10,14 @@ int startX = 0, startY = 0, lastX = 0, lastY = 0;
 static bool touchDown = false;
 static int bestDx = 0, bestDy = 0;  // furthest travel seen during the stroke
 
-// Hold state. downAt is when the current stroke started; holdFired records that
-// the stroke has already been spent on a G_HOLD, so the eventual release does
-// not also report a tap. Without that, holding on home would open the credits
-// and then immediately have the release dismiss them again.
+// Hold state. downAt is when the current stroke started. longArmed / holdFired
+// mark mid-hold thresholds so release can decide between G_LONG (pin) and
+// G_NONE (HOLD already consumed the stroke).
 static uint32_t downAt = 0;
+static uint32_t touchUpAt = 0;  // 0 = not in a lift debounce
+static bool longArmed = false;  // LONG_PRESS_MS reached; flash already sent
 static bool holdFired = false;
+static bool longEligible = true;  // cancelled once travel looks like a swipe
 
 static uint8_t readReg(uint8_t reg);
 static void writeReg(uint8_t reg, uint8_t val);
@@ -176,9 +178,12 @@ static TouchState touchRead(int &x, int &y) {
   return T_DOWN;
 }
 
-// Derives a gesture from the stroke's furthest travel. Fires on release.
-// Using the furthest point rather than the last one means a fast flick still
-// registers even if the finger drifts back before it lifts.
+// Derives a gesture from the stroke's furthest travel.
+//
+// G_LONG_ARM (~550ms) and G_HOLD (3s) fire while the finger is still down.
+// G_LONG (nametag pin/unpin) fires only on a confirmed lift after arm and
+// before HOLD.
+// Finger up is debounced: this panel often blips fingers=0 mid-hold.
 Gesture pollGesture() {
   int x, y;
   TouchState st = touchRead(x, y);
@@ -187,6 +192,7 @@ Gesture pollGesture() {
   if (st == T_FAILED) return G_NONE;  // ignore the sample, keep the stroke
 
   if (st == T_DOWN) {
+    touchUpAt = 0;  // any real contact cancels a pending lift
     if (!touchDown) {
       touchDown = true;
       startX = x;
@@ -194,7 +200,9 @@ Gesture pollGesture() {
       bestDx = 0;
       bestDy = 0;
       downAt = millis();
+      longArmed = false;
       holdFired = false;
+      longEligible = true;
     } else if (abs(x - lastX) > MAX_JUMP || abs(y - lastY) > MAX_JUMP) {
       // The controller occasionally emits a wild coordinate. Because travel is
       // tracked as the furthest point ever seen, a single bad sample turns a
@@ -211,22 +219,29 @@ Gesture pollGesture() {
     if (abs(dx) > abs(bestDx)) bestDx = dx;
     if (abs(dy) > abs(bestDy)) bestDy = dy;
 
-    // Fires mid-stroke, and only for a finger that has stayed put: the travel
-    // test is the same one that separates a tap from a swipe, so a slow drag
-    // across the screen is still a swipe and never a hold. Checked against
-    // furthest travel rather than current position, so returning to the start
-    // does not launder a swipe into a hold.
-    if (!holdFired && millis() - downAt >= HOLD_MS) {
-      if (abs(bestDx) < SWIPE_MIN && abs(bestDy) < SWIPE_MIN) {
-        holdFired = true;
-        LOGF("stroke at %d,%d held %lums -> HOLD\n", startX, startY,
-             (unsigned long)(millis() - downAt));
-        return G_HOLD;
+    // Still-hold only. A stroke that travels like a swipe never becomes LONG
+    // or HOLD — checked against furthest travel, not current position.
+    if (abs(bestDx) >= SWIPE_MIN || abs(bestDy) >= SWIPE_MIN) {
+      if (longEligible) {
+        LOGF("long/hold cancelled by travel best=%d,%d\n", bestDx, bestDy);
       }
-      // Logged once per stroke, because the alternative is a hold that does
-      // nothing and says nothing. A finger resting on the panel drifts, and if
-      // it drifts past SWIPE_MIN inside three seconds this is the only place
-      // that would ever mention it.
+      longEligible = false;
+    }
+
+    const uint32_t held = millis() - downAt;
+    if (longEligible && !longArmed && held >= LONG_PRESS_MS) {
+      longArmed = true;
+      LOGF("stroke at %d,%d held %lums -> LONG_ARM\n", startX, startY,
+           (unsigned long)held);
+      return G_LONG_ARM;
+    }
+    if (longEligible && !holdFired && held >= HOLD_MS) {
+      holdFired = true;
+      LOGF("stroke at %d,%d held %lums -> HOLD\n", startX, startY,
+           (unsigned long)held);
+      return G_HOLD;
+    }
+    if (!longEligible && !holdFired && held >= HOLD_MS) {
       static uint32_t lastBlockLog = 0;
       if (millis() - lastBlockLog > HOLD_MS) {
         lastBlockLog = millis();
@@ -237,11 +252,37 @@ Gesture pollGesture() {
     return G_NONE;
   }
 
+  // T_UP
   if (!touchDown) return G_NONE;
-  touchDown = false;
 
-  // The hold already consumed this stroke. Reporting the release as well would
-  // hand the UI a tap it never asked for.
+  // Debounce lift: require TOUCH_LIFT_MS of continuous UP before ending the
+  // stroke. Mid-hold finger-count blips otherwise collapse every hold into a
+  // tap. Thresholds can still land here during a blip.
+  const uint32_t now = millis();
+  if (touchUpAt == 0) touchUpAt = now;
+  if (now - touchUpAt < TOUCH_LIFT_MS) {
+    const uint32_t held = now - downAt;
+    if (longEligible && !longArmed && held >= LONG_PRESS_MS) {
+      longArmed = true;
+      LOGF("stroke at %d,%d held %lums -> LONG_ARM (lift debounce)\n", startX,
+           startY, (unsigned long)held);
+      return G_LONG_ARM;
+    }
+    if (longEligible && !holdFired && held >= HOLD_MS) {
+      holdFired = true;
+      LOGF("stroke at %d,%d held %lums -> HOLD (lift debounce)\n", startX,
+           startY, (unsigned long)held);
+      return G_HOLD;
+    }
+    return G_NONE;
+  }
+
+  touchDown = false;
+  touchUpAt = 0;
+  const bool armed = longArmed;
+  longArmed = false;
+
+  // HOLD already consumed this stroke — do not also emit LONG / tap.
   if (holdFired) {
     holdFired = false;
     return G_NONE;
@@ -250,6 +291,14 @@ Gesture pollGesture() {
   const int dx = bestDx;
   const int dy = bestDy;
   const int adx = abs(dx), ady = abs(dy);
+  const uint32_t held = now - downAt;
+
+  // Apply long-press (nametag pin) only on lift after arm, before the 3s HOLD.
+  if (armed && longEligible && held >= LONG_PRESS_MS) {
+    LOGF("stroke at %d,%d held %lums -> LONG (on release)\n", startX, startY,
+         (unsigned long)held);
+    return G_LONG;
+  }
 
   // Every completed stroke now resolves to something: it is a swipe if it
   // travelled far enough on its dominant axis, and a tap otherwise. No stroke
@@ -265,8 +314,9 @@ Gesture pollGesture() {
     g = G_TAP;
   }
 
-  LOGF("stroke start=%d,%d end=%d,%d best=%d,%d -> %s\n", startX, startY, lastX,
-       lastY, bestDx, bestDy, gestureWord(g));
+  LOGF("stroke start=%d,%d end=%d,%d best=%d,%d held=%lums -> %s\n", startX,
+       startY, lastX, lastY, bestDx, bestDy, (unsigned long)held,
+       gestureWord(g));
   return g;
 }
 
@@ -278,6 +328,8 @@ const char *gestureWord(Gesture g) {
     case G_RIGHT: return "RIGHT";
     case G_TAP: return "TAP";
     case G_HOLD: return "HOLD";
+    case G_LONG: return "LONG";
+    case G_LONG_ARM: return "LONG_ARM";
     default: return "?";
   }
 }

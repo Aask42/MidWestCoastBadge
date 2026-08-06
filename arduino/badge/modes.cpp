@@ -7,6 +7,7 @@
 #include "game2048.h"
 #include "input.h"
 #include "menus.h"
+#include <math.h>
 #include <sys/time.h>
 
 #include <LittleFS.h>
@@ -14,6 +15,7 @@
 #include "store.h"
 #include "mqtt.h"
 #include "net.h"
+#include "ui.h"
 
 static uint8_t slideIndex = 0;
 static uint32_t lastFrame = 0;
@@ -24,6 +26,15 @@ static uint8_t scanOffset = 0;
 
 static uint8_t bleOffset = 0;
 #define BLE_SCAN_VISIBLE 6
+
+// Shared animation phase. Advanced once per frame in modesTick() — never from
+// millis() inside a draw, or strips shear. Declared early so the nametag can
+// ride the same clock as the lenticular scenes.
+float lentAngle = 0.0f;
+
+#define LENT_MATRIX 4     // rain fall-throughs per animation loop
+#define LENT_STARS 28     // starfield depth cycles per lenticular loop
+#define NAME_BG_MS 10000  // how long each nametag background scene stays
 
 static uint8_t scanMaxOffset() {
   const uint8_t count = wifiScanCount();
@@ -36,83 +47,150 @@ static uint8_t scanMaxOffset() {
 // to ~1.05MB, which is 80% of the default 1.2MB app partition. Build with
 // PartitionScheme=huge_app (3MB app) before adding real image assets.
 
-// Fits the name as large as the panel allows, wrapping at a space when two
-// lines let the glyphs be bigger than one. That is usually a big win: "YOUR
-// NAME" on one line is capped at size 4 by its 9 characters, but split across
-// two lines the longest half is 4 characters and it fits at size 9.
-//
-// A nametag is meant to be read across a room, so this maximises rather than
-// picking a comfortable default.
+// Nametag name rendering (rainbow / solid, outlined).
+static uint16_t hsv565(uint8_t h, uint8_t s, uint8_t v) {
+  // h sweeps 0..255 around the wheel. Integer path so it stays cheap per glyph.
+  if (s == 0) {
+    const uint8_t g = v;
+    return (uint16_t)(((g & 0xF8) << 8) | ((g & 0xFC) << 3) | (g >> 3));
+  }
+  const uint8_t region = (uint8_t)(h / 43);           // 0..5
+  const uint8_t rem = (uint8_t)((h - region * 43) * 6);  // 0..258≈
+  const uint16_t p = (uint16_t)(v * (255 - s)) >> 8;
+  const uint16_t q =
+      (uint16_t)(v * (255 - ((uint16_t)s * rem >> 8))) >> 8;
+  const uint16_t t =
+      (uint16_t)(v * (255 - ((uint16_t)s * (255 - rem) >> 8))) >> 8;
+  uint8_t r, g, b;
+  switch (region) {
+    case 0:  r = v; g = (uint8_t)t; b = (uint8_t)p; break;
+    case 1:  r = (uint8_t)q; g = v; b = (uint8_t)p; break;
+    case 2:  r = (uint8_t)p; g = v; b = (uint8_t)t; break;
+    case 3:  r = (uint8_t)p; g = (uint8_t)q; b = v; break;
+    case 4:  r = (uint8_t)t; g = (uint8_t)p; b = v; break;
+    default: r = v; g = (uint8_t)p; b = (uint8_t)q; break;
+  }
+  return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+}
+
+// Rainbow keyed to horizontal position so multi-line names share one left→right
+// spectrum. Phase subtracts so the colours flow across the panel (L→R).
+static uint16_t nameFillColor(int letterX, int cellW) {
+  if (nametagColor != NAME_COLOR_RAINBOW) {
+    return NAME_COLOR_RGB[nametagColor % NAME_COLOR_COUNT];
+  }
+  const int midX = letterX + cellW / 2;
+  // One full wheel across the panel width.
+  const int spatial = (midX * 255) / SCREEN_W;
+  // Six flows per lenticular loop (~1 Hz at the usual 6s yaw period).
+  const int phase =
+      (int)((lentAngle / TWO_PI) * 255.0f * 6.0f);
+  const uint8_t h = (uint8_t)(spatial - phase);
+  return hsv565(h, 255, 255);
+}
+
 static void drawNameFitted(Arduino_GFX *g, int ox, int oy, const char *name,
-                           int bandTop, int bandH, uint16_t color) {
-  const int len = (int)strlen(name);
-  if (len == 0) return;
+                           int bandTop, int bandH, uint16_t color, int dx,
+                           int dy, bool perLetter) {
+  if (!name || !name[0]) return;
 
-  const int maxW = SCREEN_W - 16;  // keep clear of the accent border
-  const int CAP = 10;              // past this the 5x7 font is just blocks
-
-  int one = maxW / (GLYPH_W * len);
-  if (one > bandH / GLYPH_H) one = bandH / GLYPH_H;
-  if (one > CAP) one = CAP;
-  if (one < 1) one = 1;
-
-  // Split at the space nearest the middle, so the two lines are balanced and
-  // the longest one - which is what limits the size - is as short as possible.
-  int split = -1, bestDist = 9999;
-  for (int i = 0; i < len; i++) {
-    if (name[i] != ' ') continue;
-    const int d = abs(i - len / 2);
-    if (d < bestDist) {
-      bestDist = d;
-      split = i;
+  char words[4][20];
+  int lens[4] = {0};
+  int nWords = 0;
+  const char *p = name;
+  while (*p && nWords < 4) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    int i = 0;
+    while (*p && *p != ' ' && i < (int)sizeof(words[0]) - 1) {
+      words[nWords][i++] = *p++;
     }
+    words[nWords][i] = '\0';
+    if (i > 0) {
+      lens[nWords] = i;
+      nWords++;
+    }
+    while (*p && *p != ' ') p++;  // drop overflow past the 19-char word cap
+  }
+  if (nWords == 0) return;
+
+  const int maxW = SCREEN_W - 8;
+  // Each space in the name becomes a blank line gap between word rows.
+  const int gap = (nWords > 1) ? 16 : 0;
+  // First pass: width-ideal size per line (uncapped by height).
+  int sizes[4];
+  int sumH = gap * (nWords - 1);
+  for (int i = 0; i < nWords; i++) {
+    int s = maxW / (GLYPH_W * lens[i]);
+    if (s < 1) s = 1;
+    if (s > 24) s = 24;
+    sizes[i] = s;
+    sumH += GLYPH_H * s;
+  }
+  // If the stack is too tall, scale every line down by the same factor so
+  // relative "fill the width" intent is preserved as much as height allows.
+  if (sumH > bandH) {
+    // Integer scale: find the largest k/256 such that sum stays in band.
+    int scaled = 0;
+    for (int k = 256; k >= 1; k--) {
+      int h = gap * (nWords - 1);
+      for (int i = 0; i < nWords; i++) {
+        int s = (sizes[i] * k) / 256;
+        if (s < 1) s = 1;
+        h += GLYPH_H * s;
+      }
+      if (h <= bandH) {
+        for (int i = 0; i < nWords; i++) {
+          int s = (sizes[i] * k) / 256;
+          sizes[i] = s < 1 ? 1 : s;
+        }
+        scaled = 1;
+        break;
+      }
+    }
+    if (!scaled) {
+      for (int i = 0; i < nWords; i++) sizes[i] = 1;
+    }
+    sumH = gap * (nWords - 1);
+    for (int i = 0; i < nWords; i++) sumH += GLYPH_H * sizes[i];
   }
 
-  // A long name with no space in it cannot wrap at a word, and would otherwise
-  // collapse to a size nobody can read across a room. Break it mid-word
-  // instead - ugly, but legible beats correct here.
-  bool hardWrap = false;
-  if (split < 0 && len > 8) {
-    split = len / 2;
-    hardWrap = true;
-  }
-
-  int two = 0, l1 = 0, l2 = 0;
-  if (split > 0 && split < len - 1) {
-    l1 = split;
-    l2 = len - split - (hardWrap ? 0 : 1);
-    const int longest = l1 > l2 ? l1 : l2;
-    two = maxW / (GLYPH_W * longest);
-    const int hLimit = (bandH - 8) / (2 * GLYPH_H);
-    if (two > hLimit) two = hLimit;
-    if (two > CAP) two = CAP;
-  }
-
-  if (two > one) {
-    char a[40], b[40];
-    snprintf(a, sizeof(a), "%.*s", l1, name);
-    snprintf(b, sizeof(b), "%s", name + split + (hardWrap ? 0 : 1));
-    const int block = 2 * GLYPH_H * two + 8;
-    const int top = bandTop + (bandH - block) / 2;
-    printCentered(g, a, ox, oy + top, (uint8_t)two, color);
-    printCentered(g, b, ox, oy + top + GLYPH_H * two + 8, (uint8_t)two, color);
-  } else {
-    const int top = bandTop + (bandH - GLYPH_H * one) / 2;
-    printCentered(g, name, ox, oy + top, (uint8_t)one, color);
+  int top = bandTop + (bandH - sumH) / 2;
+  ox += dx;
+  oy += dy;
+  for (int i = 0; i < nWords; i++) {
+    const int sz = sizes[i];
+    const int cell = GLYPH_W * sz;
+    const int lineW = cell * lens[i];
+    // Letter X is in screen space (before ox) so hue matches panel left→right
+    // even when the outline pass draws with a dx offset.
+    int x = ox + (SCREEN_W - lineW) / 2;
+    const int screenX0 = (SCREEN_W - lineW) / 2;
+    g->setTextSize((uint8_t)sz);
+    for (int c = 0; c < lens[i]; c++) {
+      const uint16_t col =
+          perLetter ? nameFillColor(screenX0 + c * cell, cell) : color;
+      g->setTextColor(col);
+      g->setCursor(x, oy + top);
+      g->write((uint8_t)words[i][c]);
+      x += cell;
+    }
+    top += GLYPH_H * sz + gap;
   }
 }
 
-void drawNametag(Arduino_GFX *g, int ox, int oy) {
-  g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_ACCENT);
-  g->fillRect(ox + 6, oy + 6, SCREEN_W - 12, SCREEN_H - 12, C_BG);
-
-  printCentered(g, "DEF CON 34", ox, oy + 26, 1, C_DIM);
-
-  // Everything between the header and the footer belongs to the name.
-  drawNameFitted(g, ox, oy, nametagName, 52, 216, C_ACCENT);
-
-  printCentered(g, "touch to exit", ox, oy + SCREEN_H - 26, 1, C_DIM);
+// Opaque outline so the name stays readable on top of the stereo wireframes.
+static void drawNameOutlined(Arduino_GFX *g, int ox, int oy, const char *name,
+                             int bandTop, int bandH, int dx, int dy) {
+  static const int8_t off[8][2] = {{-2, -2}, {-2, 0}, {-2, 2}, {0, -2},
+                                   {0, 2},   {2, -2}, {2, 0},  {2, 2}};
+  for (int i = 0; i < 8; i++) {
+    drawNameFitted(g, ox, oy, name, bandTop, bandH, C_BG, dx + off[i][0],
+                   dy + off[i][1], false);
+  }
+  drawNameFitted(g, ox, oy, name, bandTop, bandH, C_ACCENT, dx, dy, true);
 }
+
 
 // === Lenticular 3D cube ===
 // The lens over the panel sends even columns to one eye and odd columns to the
@@ -218,16 +296,20 @@ void drawLineParity(Arduino_GFX *g, int x0, int y0, int x1, int y1,
 // Held in a global and advanced once per frame in modesTick(). This must NOT be
 // derived from millis() inside a draw call: draws run once per strip, and
 // millis() moves between strips, which would shear the scene across the bands.
-float lentAngle = 0.0f;
+// (Definition is near the top of the file so nametag colour can use it.)
 
 #define SCENE_CUBE 0
 #define SCENE_PYRAMID 1
 #define SCENE_TUNNEL 2
 #define SCENE_RINGS 3
 #define SCENE_TEXT 4
+#define SCENE_MATRIX 5
+#define SCENE_DVD 6
+#define SCENE_STARS 7
 
 static const char *const SCENE_NAMES[SCENE_COUNT] = {
-    "cube", "pyramid", "tunnel", "rings", "pop-out text"};
+    "cube",         "pyramid", "tunnel",           "rings",
+    "pop-out text", "matrix waterfall", "dvd logo", "starfield"};
 
 const char *sceneName(uint8_t i) { return SCENE_NAMES[i % SCENE_COUNT]; }
 
@@ -514,6 +596,166 @@ static void sceneText(Arduino_GFX *g, float a, int cx, int cy) {
   }
 }
 
+static void sceneMatrix(Arduino_GFX *g, float a, int ox, int oy) {
+  static const char GLYPHS[] = "01ABCDEFGHIJKLMNOPQRSTUVWXYZ<>*+:;=-";
+  static const int NGLYPHS = (int)sizeof(GLYPHS) - 1;
+
+  const int cellW = GLYPH_W;  // 6
+  const int cellH = GLYPH_H;  // 8
+  const int cols = SCREEN_W / cellW;
+  const int rows = SCREEN_H / cellH;
+  const int period = rows + 14;  // head travels off-screen before wrapping
+
+  // Bright → mid → dark green trail (RGB565).
+  const uint16_t C_HEAD = 0xCFF9;  // near-white green
+  const uint16_t C_NEAR = 0x07E0;  // full green
+  const uint16_t C_MID = 0x04A0;
+  const uint16_t C_FAR = 0x0220;
+
+  g->setTextSize(1);
+
+  const float turns = a / TWO_PI;  // 0..1 per loop sawtooth
+  for (int c = 0; c < cols; c++) {
+    const uint8_t seed = (uint8_t)(c * 37u + 11u);
+    // 2..5 full fall-throughs per loop, staggered per column.
+    const int falls = 2 + (int)(seed % 4);
+    const float headF =
+        fmodf(turns * (float)(LENT_MATRIX * falls) * (float)period + seed,
+              (float)period);
+    const int head = (int)headF;
+    const int trail = 7 + (int)(seed % 5);
+
+    for (int t = 0; t < trail; t++) {
+      const int row = head - t;
+      if (row < 0 || row >= rows) continue;
+      const char ch = GLYPHS[(seed + row * 7 + c * 3) % NGLYPHS];
+      uint16_t color = C_FAR;
+      if (t == 0) color = C_HEAD;
+      else if (t == 1) color = C_NEAR;
+      else if (t < 4) color = C_MID;
+      g->setTextColor(color);
+      g->setCursor(ox + c * cellW, oy + row * cellH);
+      g->write((uint8_t)ch);
+    }
+  }
+}
+
+// Ping-pong 0→1→0 so position is a pure function of lentAngle (strip-safe).
+static float pingpong01(float u) {
+  u = fmodf(u, 2.0f);
+  if (u < 0.0f) u += 2.0f;
+  return (u < 1.0f) ? u : (2.0f - u);
+}
+
+// Classic DVD mark: big "DVD" over a solid oval (no "VIDEO" text).
+#define DVD_LOGO_W 78
+#define DVD_LOGO_H 44
+static void drawDvdLogo(Arduino_GFX *g, int x0, int y0, uint16_t col) {
+  g->setTextSize(3);
+  g->setTextColor(col);
+  const char *dvd = "DVD";
+  const int dtw = textWidth(dvd, 3);
+  g->setCursor(x0 + (DVD_LOGO_W - dtw) / 2, y0 + 2);
+  g->print(dvd);
+
+  const int ow = 72;
+  const int oh = 16;
+  const int ecx = x0 + DVD_LOGO_W / 2;
+  const int ecy = y0 + DVD_LOGO_H - oh / 2 - 1;
+  g->fillEllipse(ecx, ecy, ow / 2, oh / 2, col);
+}
+
+// DVD-logo bounce. Flat scene; colour advances on every wall hit.
+static void sceneDvdLogo(Arduino_GFX *g, float a, int ox, int oy) {
+  static const uint16_t DVD_COLS[] = {
+      0xF800,  // red
+      0x07E0,  // green
+      0x001F,  // blue
+      0xFFE0,  // yellow
+      0x07FF,  // cyan
+      0xF81F,  // magenta
+      0xFD20,  // orange
+      0xFFFF,  // white
+  };
+  const int nCol = (int)(sizeof(DVD_COLS) / sizeof(DVD_COLS[0]));
+  const int maxX = SCREEN_W - DVD_LOGO_W;
+  const int maxY = SCREEN_H - DVD_LOGO_H;
+  if (maxX < 0 || maxY < 0) return;
+  const float t = a / TWO_PI;
+  // Incommensurate rates ≈ classic DVD path (corner hits are rare).
+  const float ux = t * 13.0f;
+  const float uy = t * 9.0f;
+  const int x = ox + (int)(pingpong01(ux) * (float)maxX);
+  const int y = oy + (int)(pingpong01(uy) * (float)maxY);
+  // Each integer step of ux/uy is an edge bounce; corners bump twice (fine).
+  const int bounces = (int)floorf(ux) + (int)floorf(uy);
+  const uint16_t col = DVD_COLS[((bounces % nCol) + nCol) % nCol];
+  drawDvdLogo(g, x, y, col);
+}
+
+// Classic Windows-style starfield: stars rush toward the viewer.
+static void sceneStars(Arduino_GFX *g, float a, int ox, int oy) {
+  const int N = 80;
+  const float u = a / TWO_PI;  // 0..1 across the lenticular loop
+  const int cx = ox + SCREEN_W / 2;
+  const int cy = oy + SCREEN_H / 2;
+
+  for (int i = 0; i < N; i++) {
+    // Stable pseudo-random lane per star (no heap, no millis in draw).
+    const uint32_t s = (uint32_t)(i * 2654435761u + 1013904223u);
+    const float x0 = ((s & 0xFFFF) / 32768.0f) - 1.0f;
+    const float y0 = (((s >> 16) & 0xFFFF) / 32768.0f) - 1.0f;
+    // Depth cycles toward the camera; LENT_STARS packs many rushes per loop.
+    float z =
+        fmodf((1.0f - u) * 7.0f * (float)LENT_STARS + (i * 0.41f), 7.0f) +
+        0.4f;
+    const float inv = 1.0f / z;
+    const int px = cx + (int)(x0 * 130.0f * inv);
+    const int py = cy + (int)(y0 * 170.0f * inv);
+    if (px < ox || px >= ox + SCREEN_W || py < oy || py >= oy + SCREEN_H) {
+      continue;
+    }
+    // Nearer = brighter + slightly larger; longer streak at speed.
+    uint16_t col = 0x4A69;  // dim
+    int sz = 1;
+    if (z < 1.4f) {
+      col = C_FG;
+      sz = 2;
+    } else if (z < 3.0f) {
+      col = C_DIM;
+      sz = 1;
+    }
+    g->fillRect(px, py, sz, sz, col);
+    if (z < 2.5f) {
+      const float tail = (z < 1.2f) ? 0.78f : 0.88f;
+      const int tx = cx + (int)(x0 * 130.0f * inv * tail);
+      const int ty = cy + (int)(y0 * 170.0f * inv * tail);
+      g->drawLine(px, py, tx, ty, col);
+    }
+  }
+}
+
+// Procedural scene geometry only — no caption / alignment chrome. Shared by
+// the SHOW modes and the nametag background rotator.
+static void drawProceduralSceneBg(Arduino_GFX *g, int ox, int oy, uint8_t idx) {
+  g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_BG);
+
+  const int cx = ox + SCREEN_W / 2;
+  const int cy = oy + SCREEN_H / 2 - 10;
+
+  switch (idx % SCENE_COUNT) {
+    case SCENE_PYRAMID: scenePyramid(g, lentAngle, cx, cy); break;
+    case SCENE_TUNNEL: sceneTunnel(g, lentAngle, cx, cy); break;
+    case SCENE_RINGS: sceneRings(g, lentAngle, cx, cy); break;
+    case SCENE_TEXT: sceneText(g, lentAngle, cx, cy); break;
+    case SCENE_MATRIX: sceneMatrix(g, lentAngle, ox, oy); break;
+    case SCENE_DVD: sceneDvdLogo(g, lentAngle, ox, oy); break;
+    case SCENE_STARS: sceneStars(g, lentAngle, ox, oy); break;
+    case SCENE_CUBE:
+    default: sceneCube(g, lentAngle, cx, cy); break;
+  }
+}
+
 // Draws scene `idx` at the current angle. Used by both slideshow and static.
 void drawScene(Arduino_GFX *g, int ox, int oy, uint8_t idx) {
   idx %= SHOW_COUNT;
@@ -526,30 +768,51 @@ void drawScene(Arduino_GFX *g, int ox, int oy, uint8_t idx) {
     return;
   }
 
-  g->fillRect(ox, oy, SCREEN_W, SCREEN_H, C_BG);
-
-  const int cx = ox + SCREEN_W / 2;
-  const int cy = oy + SCREEN_H / 2 - 10;
-
-  switch (idx % SCENE_COUNT) {
-    case SCENE_PYRAMID: scenePyramid(g, lentAngle, cx, cy); break;
-    case SCENE_TUNNEL: sceneTunnel(g, lentAngle, cx, cy); break;
-    case SCENE_RINGS: sceneRings(g, lentAngle, cx, cy); break;
-    case SCENE_TEXT: sceneText(g, lentAngle, cx, cy); break;
-    case SCENE_CUBE:
-    default: sceneCube(g, lentAngle, cx, cy); break;
-  }
+  drawProceduralSceneBg(g, ox, oy, idx);
 
   // Pitch-alignment target: a 1px interlace of the same two colours the scenes
   // use. Through a correctly aligned lens each eye sees one solid colour.
-  const int stripY = oy + SCREEN_H - 36;
-  for (int x = 0; x < SCREEN_W; x++) {
-    g->drawFastVLine(ox + x, stripY, 14, (x & 1) ? C_EYE_R : C_EYE_L);
+  // Skip it for flat (non-stereo) scenes — otherwise it reads as a bright
+  // stripe above the caption / battery.
+  if (idx != SCENE_MATRIX && idx != SCENE_STARS && idx != SCENE_DVD) {
+    const int stripY = oy + SCREEN_H - 36;
+    for (int x = 0; x < SCREEN_W; x++) {
+      g->drawFastVLine(ox + x, stripY, 14, (x & 1) ? C_EYE_R : C_EYE_L);
+    }
   }
 
   g->fillRect(ox, oy + SCREEN_H - 20, SCREEN_W, 20, C_BG);
   printCentered(g, showName(idx), ox, oy + SCREEN_H - 14, 1, C_DIM);
 }
+
+// Nametag: name on top of a background animation. Background either rotates
+// through procedural scenes, or stays locked on whichever show was pinned by
+// long-pressing the unlocked nametag rotator.
+void drawNametag(Arduino_GFX *g, int ox, int oy) {
+  // ±2 outline; keep the layout band inside the header/footer so the outline
+  // does not draw under those bars.
+  const int headerH = 36;
+  const int footerH = 24;
+  const int outMax = 2;
+  const int bandTop = headerH + outMax;
+  const int bandH = SCREEN_H - headerH - footerH - 2 * outMax;
+
+  const uint8_t bg = (SHOW_COUNT > 0) ? (uint8_t)(nameBgShow % SHOW_COUNT) : 0;
+  if (bg >= SCENE_COUNT) {
+    drawImage(g, ox, oy, bg - SCENE_COUNT);
+  } else {
+    drawProceduralSceneBg(g, ox, oy, bg);
+  }
+
+  g->fillRect(ox, oy, SCREEN_W, headerH, C_BG);
+  g->fillRect(ox, oy + SCREEN_H - footerH, SCREEN_W, footerH, C_BG);
+
+  printCentered(g, "DEF CON 34", ox, oy + 14, 1, C_DIM);
+  drawNameOutlined(g, ox, oy, nametagName, bandTop, bandH, 0, 0);
+  printCentered(g, screenIsLocked() ? "long press to unlock" : "touch to exit",
+                ox, oy + SCREEN_H - 16, 1, C_DIM);
+}
+
 
 void drawModeScreen(Arduino_GFX *g, int ox, int oy) {
   switch (activeMode()) {
@@ -615,8 +878,10 @@ void drawModeScreen(Arduino_GFX *g, int ox, int oy) {
       printCentered(g, shareWifiScans ? "SHARING TO FLEET" : "PRIVATE / LOCAL",
             ox, oy + SCREEN_H - 32, 1,
             shareWifiScans ? C_OK : C_NAV);
-      printCentered(g, "up/down scroll  tap exits", ox,
-            oy + SCREEN_H - 18, 1, C_DIM);
+      printCentered(g,
+                    screenIsLocked() ? "long press to unlock"
+                                     : "up/down scroll  tap exits",
+                    ox, oy + SCREEN_H - 18, 1, C_DIM);
       return;
     }
     case MODE_BLE_SCAN: {
@@ -678,8 +943,10 @@ void drawModeScreen(Arduino_GFX *g, int ox, int oy) {
       snprintf(summary, sizeof(summary), "%u seen this session",
                (unsigned)bleSessionCount());
       printCentered(g, summary, ox, oy + SCREEN_H - 32, 1, C_DIM);
-      printCentered(g, "up/down scroll  tap exits", ox,
-                    oy + SCREEN_H - 18, 1, C_DIM);
+      printCentered(g,
+                    screenIsLocked() ? "long press to unlock"
+                                     : "up/down scroll  tap exits",
+                    ox, oy + SCREEN_H - 18, 1, C_DIM);
       return;
     }
     case MODE_GAME_2048:
@@ -823,6 +1090,25 @@ bool modesTick(uint32_t now) {
     }
   }
 
+
+  // Nametag backgrounds rotate unless a long-press pinned one.
+  // Procedural scenes only while unlocked, so a missing LittleFS image never
+  // blanks the tag.
+  if (activeMode() == MODE_NAMETAG && !nameBgLocked) {
+    const uint8_t idx = (uint8_t)((phase / NAME_BG_MS) % SCENE_COUNT);
+    if (idx != nameBgShow) {
+      nameBgShow = idx;
+      dirty = true;
+      LOGF("nametag bg -> %s\n", sceneName(idx));
+    }
+  } else if (activeMode() == MODE_NAMETAG && nameBgLocked && SHOW_COUNT > 0) {
+    const uint8_t clamped = (uint8_t)(nameBgShow % SHOW_COUNT);
+    if (clamped != nameBgShow) {
+      nameBgShow = clamped;
+      dirty = true;
+    }
+  }
+
   // Every mode here animates, so all of them need frames.
   if (now - lastFrame >= LENT_FRAME_MS) {
     lastFrame = now;
@@ -836,4 +1122,27 @@ bool modesTick(uint32_t now) {
     dirty = true;
   }
   return dirty;
+}
+
+bool modesPinCurrentAsNametag() {
+  if (SHOW_COUNT == 0 || activeMode() != MODE_NAMETAG) return false;
+  // Pin whatever is on screen right now (rotating background).
+  if (nameBgLocked) return false;  // caller should unpin instead
+
+  nameBgShow = (uint8_t)(nameBgShow % SHOW_COUNT);
+  nameBgLocked = true;
+  saveSettings();
+  LOGF("nametag pinned -> %s (show %u)\n", showName(nameBgShow),
+       (unsigned)nameBgShow);
+  return true;
+}
+
+bool modesUnpinNametag() {
+  if (!nameBgLocked) return false;
+  nameBgLocked = false;
+  // Drop back into the procedural rotator from a safe index.
+  if (nameBgShow >= SCENE_COUNT) nameBgShow = 0;
+  saveSettings();
+  LOGF("nametag unpinned — backgrounds rotating again\n");
+  return true;
 }

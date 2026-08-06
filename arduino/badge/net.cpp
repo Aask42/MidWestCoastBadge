@@ -180,11 +180,14 @@ void wifiDisconnect() {
 }
 
 void netBegin() {
-  // If a network was configured on a previous boot, start joining it now.
-  // Asynchronous, so this costs nothing at boot even if the AP is not there.
-  if (wifiSsid[0]) {
+  // Only join when the user has explicitly enabled WiFi. Credentials can sit
+  // in NVS with the radio off — that is the battery-friendly default.
+  if (wifiWanted && wifiSsid[0]) {
     wifiConnect();
     refreshSysLabels();
+  } else {
+    WiFi.mode(WIFI_OFF);
+    LOGF("wifi: off (enable from SYSTEM)\n");
   }
 }
 
