@@ -10,6 +10,7 @@
 # Mosquitto password databases (hashed, but still credential material).
 config/passwd
 config/passwd.production
+config/acl.production.conf
 
 # Local bind-mounted runtime state (production uses named volumes instead).
 data/

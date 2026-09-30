@@ -2,7 +2,7 @@
 
 This is the development version of the Oracle deployment. It exposes MQTT on
 `1883` and browser WebSockets on `9001`. Production adds Caddy in front for
-valid TLS/WSS certificates; the Mosquitto ACL and data layout stay the same.
+valid TLS/WSS certificates and uses individually enrolled badge accounts.
 
 ```sh
 ./broker/setup-local.sh
@@ -32,9 +32,9 @@ Nothing above behaves differently because production exists.
 | Compose | `compose.yml` | `compose.production.yml` |
 | Mosquitto config | `config/mosquitto.conf` | `config/mosquitto.production.conf` |
 | Credentials | `.env`, `config/passwd` | `.env.production`, `config/passwd.production` |
-| ACL | `config/acl.conf` | the same file, shared |
+| ACL | `config/acl.conf` | generated `config/acl.production.conf` |
 | Exposed | 1883, 9001 on localhost | 80, 443, 8883 only |
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the full walkthrough: instance setup,
 the two Oracle firewalls, ACME certificates shared between Caddy and Mosquitto,
-and the backup, update and rollback commands.
+per-badge enrollment, and the backup, update and rollback commands.

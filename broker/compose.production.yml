@@ -32,9 +32,6 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # The static owner controller. Read-only, and outside broker/ - the web
-      # app is never modified by the deployment, only served.
-      - ../web:/srv/web:ro
       # ACME account keys and issued certificates. Losing this volume means
       # re-issuing from scratch and counting against Let's Encrypt rate
       # limits, so it is included in scripts/backup.sh.

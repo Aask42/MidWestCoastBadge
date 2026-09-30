@@ -3,9 +3,11 @@
 # Caddy owns every certificate in this stack. It obtains one ACME certificate
 # for DOMAIN and serves:
 #
-#   https://DOMAIN/          the static badge-owner controller from web/
 #   wss://DOMAIN/mqtt        browser MQTT, reverse-proxied to the private
 #                            Mosquitto WebSocket listener on the Docker network
+#
+# The web controller lives on GitHub Pages, not here. Caddy sets CORS headers
+# so the Pages origin can open WebSocket connections to the broker.
 #
 # The same certificate is copied into the Mosquitto container by the certsync
 # sidecar and used for native MQTT over TLS on 8883, so badges and browsers
@@ -44,15 +46,13 @@
 		-Server
 	}
 
-	# Browser MQTT. mqtt.js in web/app.js connects to wss://<host>/mqtt, and
-	# Mosquitto's WebSocket listener accepts the upgrade on any path, so the
-	# request is proxied through unmodified. Caddy handles the Upgrade
-	# handshake for reverse_proxy automatically.
-	#
-	# The upstream is plain ws:// on the internal Docker network only - the
-	# encryption the browser sees is terminated here.
+	# Browser MQTT. The web controller on GitHub Pages connects cross-origin
+	# to wss://DOMAIN/mqtt. Caddy handles the Upgrade handshake for
+	# reverse_proxy automatically; the CORS headers let the browser allow it.
 	@mqtt path /mqtt /mqtt/*
 	handle @mqtt {
+		header Access-Control-Allow-Origin "{$PAGES_ORIGIN:*}"
+		header Access-Control-Allow-Headers "content-type"
 		reverse_proxy mosquitto:9001 {
 			# Badges and browsers hold connections open for hours; MQTT
 			# keepalive, not a proxy timeout, decides when one is dead.
@@ -69,13 +69,9 @@
 		respond "ok" 200
 	}
 
-	# The static owner controller from web/, mounted read-only. If you host
-	# the controller on GitHub Pages instead, this simply serves nothing of
-	# interest and browsers point their broker field at wss://DOMAIN/mqtt.
+	# No static files - the web controller is on GitHub Pages.
 	handle {
-		root * /srv/web
-		encode zstd gzip
-		file_server
+		respond "see GitHub Pages" 404
 	}
 
 	# A Content-Security-Policy is intentionally NOT set here. web/index.html

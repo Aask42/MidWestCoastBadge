@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Vector lock / unlock icons matching the reference artwork.
+     Filled silhouettes; unlocked shackle hinged on the right and flipped out. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 24" fill="#111">
+  <!-- locked -->
+  <g id="lock" transform="translate(1,0)">
+    <path d="M8.5 10.2V6.4c0-2.65 2.15-4.8 4.8-4.8s4.8 2.15 4.8 4.8v3.8h-2.6V6.4c0-1.22-.98-2.2-2.2-2.2s-2.2.98-2.2 2.2v3.8H8.5z"/>
+    <rect x="5" y="10" width="14" height="12" rx="2.2"/>
+  </g>
+  <!-- unlocked: shackle flipped out to the right -->
+  <g id="lock_open" transform="translate(28,0)">
+    <path d="M16.5 10.2V6.4c0-2.65 2.15-4.8 4.8-4.8s4.8 2.15 4.8 4.8v5.2h-2.6V6.4c0-1.22-.98-2.2-2.2-2.2s-2.2.98-2.2 2.2v3.8h-2.6z"/>
+    <rect x="3" y="10" width="14" height="12" rx="2.2"/>
+  </g>
+</svg>

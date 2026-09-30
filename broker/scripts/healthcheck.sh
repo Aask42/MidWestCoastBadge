@@ -95,20 +95,17 @@ else
 	ok "anonymous access is refused"
 fi
 
-# A badge's-eye view of the TLS listener: real handshake, real chain, real
-# credential. Verified against the container's system trust store, not against
-# the served fullchain.pem - a fullchain ends at an intermediate, and OpenSSL
-# will not treat an intermediate as a trust anchor, so verifying a certificate
-# against its own chain always fails. --insecure disables only hostname
-# matching, because we connect to 127.0.0.1 while the certificate names DOMAIN.
-if mq mosquitto_pub -h 127.0.0.1 -p 8883 \
+# Internal TLS listener check: real handshake, public chain, and credential.
+# Hostname verification is intentionally deferred to the public DOMAIN check
+# below because this connection targets container loopback.
+if mq mosquitto_sub -h 127.0.0.1 -p 8883 \
 	--cafile /etc/ssl/certs/ca-certificates.crt --insecure \
-	-u badge -P "$BADGE_PASSWORD" -t "dc34/claim/healthcheck" -m ok >/dev/null 2>&1; then
-	ok "MQTT over TLS on 8883 accepts the badge credential against a publicly trusted chain"
+	-u health -P "$HEALTH_PASSWORD" -t '$SYS/broker/uptime' -C 1 -W 5 >/dev/null 2>&1; then
+	ok "MQTT over TLS on 8883 accepts authenticated clients against a publicly trusted chain"
 elif [ -n "${TLS_DIRECTIVE:-}" ]; then
 	skip "MQTT over TLS on 8883 (TLS_DIRECTIVE is set, so the chain is not publicly trusted by design)"
 else
-	bad "MQTT over TLS on 8883 rejected a publish from the badge credential"
+	bad "MQTT over TLS on 8883 rejected an authenticated connection"
 fi
 
 # Mirrors smoke-test.sh: the credential that ships in the static site must not
@@ -132,7 +129,7 @@ rm -f "$DENIED_OUT"
 # The same exchange over a topic the web credential legitimately owns, to prove
 # the check above is measuring the ACL and not a broken test.
 ALLOWED_OUT=$(mktemp)
-mq mosquitto_sub -h 127.0.0.1 -p 1883 -u badge -P "$BADGE_PASSWORD" \
+mq mosquitto_sub -h 127.0.0.1 -p 1883 -u operator -P "$OPERATOR_PASSWORD" \
 	-t 'dc34/badge/healthcheck/owner' -C 1 -W 4 >"$ALLOWED_OUT" 2>/dev/null &
 ALLOWED_PID=$!
 sleep 1
@@ -148,6 +145,7 @@ rm -f "$ALLOWED_OUT"
 # --- Certificate ------------------------------------------------------------
 section 'certificate'
 CERT_PEM=$(mq cat /mosquitto/certs/fullchain.pem 2>/dev/null)
+KEY_PEM=$(mq cat /mosquitto/certs/privkey.pem 2>/dev/null)
 if [ -z "$CERT_PEM" ]; then
 	bad "no certificate published to the broker yet (is certsync running? has ACME completed?)"
 elif ! command -v openssl >/dev/null 2>&1; then
@@ -168,6 +166,22 @@ else
 	else
 		bad "certificate does not list $DOMAIN in its SANs ($SUBJECT)"
 	fi
+
+	CERT_KEY=$(printf '%s' "$CERT_PEM" | openssl x509 -pubkey -noout 2>/dev/null |
+		openssl pkey -pubin -outform DER 2>/dev/null | openssl sha256 2>/dev/null)
+	PRIVATE_KEY=$(printf '%s' "$KEY_PEM" | openssl pkey -pubout -outform DER 2>/dev/null |
+		openssl sha256 2>/dev/null)
+	if [ -n "$CERT_KEY" ] && [ "$CERT_KEY" = "$PRIVATE_KEY" ]; then
+		ok "certificate matches Mosquitto's private key"
+	else
+		bad "certificate and private key do not match"
+	fi
+
+	KEY_MODE=$(mq stat -c '%a' /mosquitto/certs/privkey.pem 2>/dev/null)
+	case "$KEY_MODE" in
+	600 | 640) ok "private key permissions are $KEY_MODE" ;;
+	*) bad "private key permissions are ${KEY_MODE:-unknown}, expected 600 or 640" ;;
+	esac
 
 	# Public trust is proved properly by the s_client check further down. What
 	# matters here is catching the one wrong-but-plausible outcome: a rehearsal
@@ -222,8 +236,8 @@ else
 
 	if command -v openssl >/dev/null 2>&1; then
 		if echo | openssl s_client -connect "$DOMAIN:8883" -servername "$DOMAIN" \
-			-verify_return_error >/dev/null 2>&1; then
-			ok "$DOMAIN:8883 completes a TLS handshake with a publicly trusted chain"
+			-verify_hostname "$DOMAIN" -verify_return_error >/dev/null 2>&1; then
+			ok "$DOMAIN:8883 certificate chain and hostname verify"
 		else
 			bad "$DOMAIN:8883 failed TLS verification from this host (firewall, security list, or chain)"
 		fi

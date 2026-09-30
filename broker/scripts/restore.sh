@@ -63,6 +63,11 @@ if [ -f "$STAGE/config/passwd.production" ]; then
 	cp "$STAGE/config/passwd.production" "$PASSWD_FILE"
 	chmod 600 "$PASSWD_FILE"
 fi
+if [ -f "$STAGE/config/acl.production.conf" ]; then
+	log "restoring config/acl.production.conf"
+	cp "$STAGE/config/acl.production.conf" "$BROKER_DIR/config/acl.production.conf"
+	chmod 600 "$BROKER_DIR/config/acl.production.conf"
+fi
 
 log "starting the stack"
 compose up -d

@@ -56,7 +56,7 @@ cp "$ENV_FILE" "$STAGE/env.production"
 cp "$PASSWD_FILE" "$STAGE/config/passwd.production"
 cp "$BROKER_DIR/Caddyfile" "$STAGE/Caddyfile"
 cp "$BROKER_DIR/config/mosquitto.production.conf" "$STAGE/config/"
-cp "$BROKER_DIR/config/acl.conf" "$STAGE/config/"
+cp "$BROKER_DIR/config/acl.production.conf" "$STAGE/config/"
 compose config >"$STAGE/resolved-compose.yml" 2>/dev/null || true
 date -u '+%Y-%m-%dT%H:%M:%SZ' >"$STAGE/created-at"
 

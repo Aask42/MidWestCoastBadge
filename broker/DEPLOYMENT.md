@@ -13,7 +13,7 @@ nothing to keep running for the life of the badge.
           |            |         |
       +---+------------+---------+---+
       |            Caddy             |   ACME, HTTPS, WSS
-      |   https://DOMAIN/     -> web/ (static owner controller)
+      |   https://DOMAIN/     -> no static content (controller on Pages)
       |   wss://DOMAIN/mqtt   -> mosquitto:9001
       +------------+-----------------+
                    |  internal docker network
@@ -87,7 +87,7 @@ then add these **ingress** rules:
 | Source | IP protocol | Destination port | Purpose |
 | --- | --- | --- | --- |
 | `0.0.0.0/0` | TCP | 80 | ACME HTTP-01 challenge, redirect to HTTPS |
-| `0.0.0.0/0` | TCP | 443 | HTTPS for the controller, WSS for browsers |
+| `0.0.0.0/0` | TCP | 443 | HTTPS and WSS for browser MQTT |
 | `0.0.0.0/0` | TCP | 8883 | MQTT over TLS for badges |
 
 Leave the existing rule for port 22, and add nothing else. Do **not** open 1883
@@ -192,21 +192,31 @@ will flag the chain — that is expected until you switch back.
 
 ## 6. Point the clients at it
 
-**Badges** — on the badge's MQTT screen:
+**Badges** — enroll each physical badge by the eight-character ID shown on its
+screen:
+
+```sh
+./scripts/enroll-badge.sh 68cd2517
+```
+
+The command prints a unique username/password and the exact serial provisioning
+line. On the badge's MQTT screen the equivalent fields are:
 
 | Field | Value |
 | --- | --- |
 | Broker | `badge.example.com` |
 | Port | `8883` |
-| User | `badge` |
-| Password | the `BADGE_PASSWORD` printed by `setup-production.sh` |
+| User | `badge-68cd2517` (that badge's ID) |
+| Password | the one-time password printed by `enroll-badge.sh` |
 
 Port 8883 is not a preference — the firmware chooses TLS purely by port number
 (`arduino/badge/mqtt.cpp`), so 8883 is what turns encryption on.
+Use the DNS hostname, never the server IP: firmware verifies both the Let's
+Encrypt chain and the certificate hostname. Rotate one compromised badge with
+`./scripts/enroll-badge.sh --rotate 68cd2517`; other badges are unaffected.
 
-**Browser controller** — either open `https://badge.example.com/`, which Caddy
-serves from `web/`, or host `web/` anywhere (GitHub Pages) and set the broker
-field to `wss://badge.example.com/mqtt`. Cross-origin works: WebSockets are not
+**Browser controller** — open the `web/` controller hosted on GitHub Pages and
+set the broker field to `wss://badge.example.com/mqtt`. WebSockets are not
 subject to CORS preflight. The `web` credential is public by design and the ACL
 confines it to owner topics.
 
@@ -278,8 +288,9 @@ stopped working surfaces two weeks before badges start failing.
 docker compose -f compose.production.yml --env-file .env.production up -d --force-recreate mosquitto
 ```
 
-Every badge, the web client and any operator tooling need the new password
-afterwards. Plan it for a time when you can reflash or re-enter them.
+Update the web client and any operator tooling with their new passwords.
+Badge credentials are unaffected; rotate an individual badge with
+`./scripts/enroll-badge.sh --rotate <8-hex-badge-id>`.
 
 ## Certificate renewal
 
@@ -324,13 +335,13 @@ Browsers are unaffected — Caddy swaps certificates without dropping anything.
   key, not from this password.
 - **`certsync` holds no privileges.** No Docker socket, no host mounts,
   `network_mode: none`. It only copies between two volumes.
-- **The badge does not verify the broker's certificate.** The firmware calls
-  `setInsecure()` (`arduino/badge/mqtt.cpp`), so badge traffic is encrypted but
-  not authenticated, and remains open to an active machine-in-the-middle. The
-  publicly trusted certificate this deployment provides is what makes fixing
-  that a firmware-only change: pin ISRG Root X1 with `setCACert()` and nothing
-  here needs to move. Until then, treat badge telemetry as public and keep
-  relying on the message-level crypto for authority.
+- **Badges verify the broker certificate.** Firmware pins ISRG Root X1 with
+  `setCACert()` and validates the configured hostname. The healthcheck verifies
+  the public chain, SAN, expiry, certificate/key match, and private-key mode.
+- **Production badge credentials are unique.** Each broker account can read
+  only broadcast and its own command topics and write only its own state,
+  telemetry, and Wi-Fi observations. Individual credentials can be revoked or
+  rotated without touching the fleet.
 
 ## Always Free limits worth knowing
 
