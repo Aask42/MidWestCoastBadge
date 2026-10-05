@@ -13,7 +13,7 @@ nothing to keep running for the life of the badge.
           |            |         |
       +---+------------+---------+---+
       |            Caddy             |   ACME, HTTPS, WSS
-      |   https://DOMAIN/     -> web/ (static owner controller)
+      |   https://DOMAIN/     -> no static content (controller on Pages)
       |   wss://DOMAIN/mqtt   -> mosquitto:9001
       +------------+-----------------+
                    |  internal docker network
@@ -87,7 +87,7 @@ then add these **ingress** rules:
 | Source | IP protocol | Destination port | Purpose |
 | --- | --- | --- | --- |
 | `0.0.0.0/0` | TCP | 80 | ACME HTTP-01 challenge, redirect to HTTPS |
-| `0.0.0.0/0` | TCP | 443 | HTTPS for the controller, WSS for browsers |
+| `0.0.0.0/0` | TCP | 443 | HTTPS and WSS for browser MQTT |
 | `0.0.0.0/0` | TCP | 8883 | MQTT over TLS for badges |
 
 Leave the existing rule for port 22, and add nothing else. Do **not** open 1883
@@ -215,9 +215,8 @@ Use the DNS hostname, never the server IP: firmware verifies both the Let's
 Encrypt chain and the certificate hostname. Rotate one compromised badge with
 `./scripts/enroll-badge.sh --rotate 68cd2517`; other badges are unaffected.
 
-**Browser controller** — either open `https://badge.example.com/`, which Caddy
-serves from `web/`, or host `web/` anywhere (GitHub Pages) and set the broker
-field to `wss://badge.example.com/mqtt`. Cross-origin works: WebSockets are not
+**Browser controller** — open the `web/` controller hosted on GitHub Pages and
+set the broker field to `wss://badge.example.com/mqtt`. WebSockets are not
 subject to CORS preflight. The `web` credential is public by design and the ACL
 confines it to owner topics.
 
@@ -289,8 +288,9 @@ stopped working surfaces two weeks before badges start failing.
 docker compose -f compose.production.yml --env-file .env.production up -d --force-recreate mosquitto
 ```
 
-Every badge, the web client and any operator tooling need the new password
-afterwards. Plan it for a time when you can reflash or re-enter them.
+Update the web client and any operator tooling with their new passwords.
+Badge credentials are unaffected; rotate an individual badge with
+`./scripts/enroll-badge.sh --rotate <8-hex-badge-id>`.
 
 ## Certificate renewal
 
